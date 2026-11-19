@@ -7,6 +7,7 @@ import pytest
 
 from weft.certificate import GatePolicy
 from weft.compiler import BetaEditConfig, BetaEditNullspaceProjector, verify_rederivation
+from weft.quant import dequantize_int4, dequantize_int8, quantize_int4, quantize_int8
 
 
 def test_spd_cholesky_reduction_matches_dense_betaedit_eq9() -> None:
@@ -176,3 +177,91 @@ def test_sequential_betaedit_lowers_k0_leakage_versus_static_unregularized() -> 
     leak_beta = p_beta.knowledge_leakage_norm(k0)
     leak_unreg = p_unreg.knowledge_leakage_norm(k0)
     assert leak_beta < leak_unreg * 0.05
+
+
+def test_int8_and_int4_roundtrip_and_subnormal_safety() -> None:
+    rng = np.random.default_rng(1234)
+    # Odd number of elements (5 x 7 = 35) to exercise nibble padding plus zero and subnormal rows
+    mat = rng.standard_normal((5, 7))
+    mat[1, :] = 0.0
+    mat[2, :] = 1e-45  # subnormal float32 scale underflow guard
+
+    raw8, deq8 = quantize_int8(mat, axis=1)
+    assert np.array_equal(dequantize_int8(raw8, (5, 7), axis=1), deq8)
+    assert np.all(np.isfinite(deq8))
+
+    raw8_c, deq8_c = quantize_int8(mat, axis=0)
+    assert np.array_equal(dequantize_int8(raw8_c, (5, 7), axis=0), deq8_c)
+    assert np.all(np.isfinite(deq8_c))
+
+    raw4, deq4 = quantize_int4(mat, axis=1)
+    assert np.array_equal(dequantize_int4(raw4, (5, 7), axis=1), deq4)
+    assert np.all(np.isfinite(deq4))
+    assert len(raw4) < len(raw8)
+
+    raw4_c, deq4_c = quantize_int4(mat, axis=0)
+    assert np.array_equal(dequantize_int4(raw4_c, (5, 7), axis=0), deq4_c)
+    assert np.all(np.isfinite(deq4_c))
+
+    with pytest.raises(ValueError, match="Expected"):
+        dequantize_int4(raw4[:-1], (5, 7))
+    with pytest.raises(ValueError, match="non-empty"):
+        quantize_int4(np.zeros((0, 4)))
+
+
+def test_asymmetric_int4_b_int8_a_preserves_nullspace_and_rederives() -> None:
+    """Asymmetric Factor Leakage Theorem: INT4 B + INT8 A beats INT4/INT4 and INT8/INT4."""
+    rng = np.random.default_rng(2026)
+    d_in, d_out = 48, 48
+    w0 = rng.standard_normal((d_out, d_in)) * 0.1
+    # Exact rank-12 preserved subspace inside R^48 so A_j K0 = 0 in float64
+    k0 = rng.standard_normal((d_in, 12))
+    keys = rng.standard_normal((d_in, 4))
+    residuals = rng.standard_normal((d_out, 4)) * 0.6
+
+    def compile_and_measure(b_dt: str, a_dt: str) -> tuple[float, int, str, bool]:
+        cfg = BetaEditConfig(
+            d_in=d_in,
+            d_out=d_out,
+            max_rank=4,
+            lambda_leakage=1000.0,
+            lambda_ridge=1.0,
+            nullspace_threshold=1e-6,
+            threshold_mode="absolute",
+            quant_dtype="f16",
+            b_quant_dtype=b_dt,  # type: ignore[arg-type]
+            a_quant_dtype=a_dt,  # type: ignore[arg-type]
+        )
+        proj = BetaEditNullspaceProjector(w0, cfg)
+        proj.initialize_anchor_covariance(k0)
+        patch = proj.stage_edit(keys, residuals, is_residual=True, rank=4, slot_name="asym")
+        ok, _ = verify_rederivation(
+            patch,
+            base_weight=w0,
+            config=cfg,
+            k0=k0,
+            keys=keys,
+            target_values_or_residuals=residuals,
+            is_residual=True,
+            rank=4,
+        )
+        proj.commit_patch(patch, keys)
+        leak = proj.knowledge_leakage_norm(k0)
+        payload_bytes = len(patch.b_bytes) + len(patch.a_bytes)
+        return leak, payload_bytes, patch.certificate.quant_dtype, ok
+
+    leak_88, bytes_88, lbl_88, ok_88 = compile_and_measure("int8", "int8")
+    leak_44, bytes_44, lbl_44, ok_44 = compile_and_measure("int4", "int4")
+    leak_48, bytes_48, lbl_48, ok_48 = compile_and_measure("int4", "int8")
+    leak_84, bytes_84, lbl_84, ok_84 = compile_and_measure("int8", "int4")
+
+    assert ok_88 and ok_44 and ok_48 and ok_84
+    assert lbl_48 == "int4/int8"
+    assert lbl_84 == "int8/int4"
+    # Matched bit budget: d_in == d_out == 48, so bytes_48 == bytes_84
+    assert bytes_48 == bytes_84
+    assert bytes_44 < bytes_48 < bytes_88
+    # Theorem: INT4 B + INT8 A stays near INT8/INT8 and beats BOTH INT4/INT4 and INT8/INT4 by >8x
+    assert leak_48 < leak_88 * 1.25
+    assert leak_48 < leak_44 * 0.12
+    assert leak_48 < leak_84 * 0.12

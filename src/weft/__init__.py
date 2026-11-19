@@ -20,7 +20,14 @@ from .binding import (
 from .certificate import FixedRadixCertificate, GatePolicy, build_certificate
 from .compiler import BetaEditConfig, BetaEditNullspaceProjector, StagedPatch, verify_rederivation
 from .gguf_lora import GGUFLoraAdapter, read_gguf_lora, write_gguf_lora
-from .quant import quantize_bf16, quantize_f16
+from .quant import (
+    dequantize_int4,
+    dequantize_int8,
+    quantize_bf16,
+    quantize_f16,
+    quantize_int4,
+    quantize_int8,
+)
 
 __all__ = [
     "ADAPTER_CLASS_1",
@@ -40,10 +47,14 @@ __all__ = [
     "build_binding_manifest",
     "build_certificate",
     "check_flake_stability",
+    "dequantize_int4",
+    "dequantize_int8",
     "evaluate_adapter_gate",
     "lexicase_select",
     "quantize_bf16",
     "quantize_f16",
+    "quantize_int4",
+    "quantize_int8",
     "read_gguf_lora",
     "verify_binding",
     "verify_rederivation",

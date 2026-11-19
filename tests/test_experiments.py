@@ -1,4 +1,4 @@
-"""Regression tests verifying the core invariants of Experiments E1, E2, and E3."""
+"""Regression tests verifying the core invariants of Experiments E1 through E4."""
 
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ if str(ROOT) not in sys.path:
 from experiments.e1_shared_token_composition import run_experiment as run_e1
 from experiments.e2_anti_goodhart_gate import run_experiment as run_e2
 from experiments.e3_real_checkpoint_smoke import run_experiment as run_e3
+from experiments.e4_asymmetric_quant_packing import run_experiment as run_e4
 
 
 def test_e1_marchenko_pastur_and_zone_routing_invariants() -> None:
@@ -59,3 +60,41 @@ def test_e3_end_to_end_smoke_rederivation_rollback_and_tamper() -> None:
     assert tamp["chat_template_1byte_rejected"] is True
     assert tamp["plane1_1byte_stale_lineage_rejected"] is True
     assert tamp["runtime_flag_drift_rejected"] is True
+
+
+def test_e4_asymmetric_quant_packing_beats_uniform_int4_and_reversed_control() -> None:
+    res = run_e4()
+    cp = res["c_proj_headline_n3"]
+    cf = res["c_fc_headline_n3"]
+
+    # Asymmetric Factor Leakage Theorem on real c_proj and c_fc:
+    # INT4 B + INT8 A beats both INT4/INT4 and reversed INT8/INT4 by >10x and tracks INT8/INT8
+    assert cp["int4_int4_vs_int4_int8_leakage_ratio"] > 10.0
+    assert cp["int8_int4_vs_int4_int8_leakage_ratio"] > 10.0
+    assert cp["int4_int8_vs_int8_int8_leakage_ratio"] < 1.15
+
+    assert cf["int4_int4_vs_int4_int8_leakage_ratio"] > 10.0
+    assert cf["int8_int4_vs_int4_int8_leakage_ratio"] > 10.0
+    assert cf["int4_int8_vs_int8_int8_leakage_ratio"] < 1.15
+    assert cf["int4_int8_byte_savings_vs_int8_int8_pct"] > 35.0
+    assert cf["int4_int8_byte_savings_vs_f16_f16_pct"] > 65.0
+
+    # Every regime passes exact wire decode and 0-byte re-derivation; int4/f16 beats bf16/bf16
+    regimes = res["c_proj_regimes"]
+    for reg in regimes.values():
+        assert reg["wire_roundtrip_exact"] is True
+        assert reg["n1_zero_byte_rederivation"] is True
+    assert (
+        regimes["int4/f16"]["steps"]["N3"]["k0_linear_leakage_fro"]
+        < regimes["bf16/bf16"]["steps"]["N3"]["k0_linear_leakage_fro"] * 0.25
+    )
+    assert (
+        regimes["int4/f16"]["steps"]["N3"]["payload_bytes_total"]
+        < regimes["bf16/bf16"]["steps"]["N3"]["payload_bytes_total"]
+    )
+
+    # Noise-only K0 covariance cuts held-out real K0 leakage substantially vs naive
+    nk = res["siliquant12_noise_k0_probe"]
+    assert nk["noise_only_k0_soft"]["holdout_real_k0_leakage_fro"] < (
+        nk["naive_unregularized"]["holdout_real_k0_leakage_fro"] * 0.65
+    )

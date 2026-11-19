@@ -11,6 +11,7 @@ python3 -m venv .venv
 .venv/bin/python experiments/e1_shared_token_composition.py
 .venv/bin/python experiments/e2_anti_goodhart_gate.py
 .venv/bin/python experiments/e3_real_checkpoint_smoke.py
+.venv/bin/python experiments/e4_asymmetric_quant_packing.py
 ```
 
 ## E1: Shared-token null-space collapse vs register-scoped composition
@@ -80,3 +81,59 @@ Scope (`verified` on real pretrained `roneneldan/TinyStories-1M` Safetensors che
 | Tamper rejection battery | `chat_template.jinja` 1-byte = rejected, Plane 1 `writing.md` 1-byte = rejected (`stale_lineage`), `enable_thinking` flag = rejected (`runtime_flag_drift`) |
 
 Honest boundary on E3: `TinyStories-1M` is a 1M-parameter narrative model, not an instruction-following coding model. E3 verifies exact plumbing, real Safetensors activation harvesting, GGUF binary emission, 0-byte re-derivation, rollback, and tamper rejection on real pretrained weights. It does not prove complex SOP generalization on a 4B to 27B instruct checkpoint, which remains Milestone 3.
+
+## E4: Asymmetric factor quantization and zero-data calibration probes
+
+Scope (`verified` on real pretrained `roneneldan/TinyStories-1M`, editing Layer-7 `mlp.c_proj` of shape `64 x 256` and Layer-7 `mlp.c_fc` of shape `256 x 64`, `N = 3` sequential rank-4 adapters for `corpus`, `eido`, and `formal`, 16 real `K0` narrative prompts, 9 unseen validation prompts).
+
+### Finding 1: Live validation of the Asymmetric Factor Leakage Theorem
+
+For a null-space adapter `Delta = B A` with `A K0 = 0`, separate factor quantization yields `Q(B) Q(A) K0 = Q(B) (E_A K0)`. Rounding error `E_B` drops out to first order, while rounding error `E_A` drives all `K0` leakage. Per-rank-vector scales (`axis = 0` on `B`, `axis = 1` on `A`) keep integer scale overhead to `4 * r` bytes per factor.
+
+Measured at `N = 3` sequential adapters on real Layer-7 `mlp.c_proj` (`64 x 256`, live 8-layer forward pass across 50,257 vocab tokens, 100 percent exact wire readback and 0-byte re-derivation across all 8 regimes):
+
+| Regime (`B / A`) | `N = 3` Bytes | `K0` Linear Leak | `K0` Top-1 Retained | `K0` Max Logit Drift | Val Margin Gain | Cert Leakage Sum |
+| --- | --- | --- | --- | --- | --- | --- |
+| `f32 / f32` | 15,360 | 0.000000 | 16/16 | 0.000002 | +18.5257 | 3 |
+| `f16 / f16` | 7,680 | 0.000597 | 16/16 | 0.022598 | +18.5256 | 5,448 |
+| `int4 / f16` | 6,576 | 0.000605 | 16/16 | 0.023368 | +18.3238 | 5,606 |
+| `bf16 / bf16` | 7,680 | 0.004471 | 15/16 | 0.178002 | +18.5234 | 318,769 |
+| `int8 / int8` | 3,936 | 0.028787 | 15/16 | 1.328532 | +18.5267 | 13,596,890 |
+| `int4 / int8` | 3,552 | 0.029345 | 15/16 | 1.353259 | +18.3219 | 14,115,373 |
+| `int8 / int4` (control) | 2,400 | 0.533395 | 6/16 | 11.938732 | +18.6557 | 4,479,267,316 |
+| `int4 / int4` | 2,016 | 0.539110 | 6/16 | 11.811741 | +18.4366 | 4,584,581,757 |
+
+Key observations on `mlp.c_proj` (`N = 3`):
+
+- `int4 / int8` cuts `K0` leakage by 18.37x vs uniform `int4 / int4` (`0.0293` vs `0.5391`) and by 18.18x vs the reversed control `int8 / int4` (`0.5334`), staying within 1.9 percent of `int8 / int8` (`0.0288`) and preserving 15/16 top-1 predictions vs 6/16.
+- `int4 / f16` beats uniform `bf16 / bf16` on every metric: smaller payload (`6,576` vs `7,680` bytes), 7.4x lower linear leakage (`0.000605` vs `0.004471`), 7.6x lower max logit drift (`0.0234` vs `0.1780`), and 16/16 vs 15/16 top-1 retention.
+- The post-quantization integer certificate detects the `int4 / int4` and `int8 / int4` failure before GPU load (`4.58e9` vs `1.41e7` scaled leakage energy, a 325x jump).
+
+### Finding 2: Shape asymmetry on wide-output projections (`mlp.c_fc`, `256 x 64`)
+
+On `mlp.c_proj`, `A` (`4 x 256`) is 4x larger than `B` (`64 x 4`), so shrinking `B` saves only 9.8 percent vs `int8 / int8`. On wide-output layers like `mlp.c_fc` (`256 x 64`, matching `W_up` and `W_gate` in larger transformers), `B` is 4x larger than `A`:
+
+| Regime (`B / A`) on `mlp.c_fc` | `N = 3` Bytes | Savings vs `int8/int8` | Savings vs `f16/f16` | `K0` Linear Leak (`N = 3`) |
+| --- | --- | --- | --- | --- |
+| `f16 / f16` | 7,680 | -95.1% | 0.0% | 0.003876 |
+| `bf16 / bf16` | 7,680 | -95.1% | 0.0% | 0.048433 |
+| `int8 / int8` | 3,936 | 0.0% | 48.8% | 0.147815 |
+| `int4 / f16` | 3,120 | 20.7% | 59.4% | 0.003916 |
+| `int4 / int8` | 2,400 | 39.0% | 68.8% | 0.148809 |
+| `int8 / int4` (control) | 3,552 | 9.8% | 53.8% | 2.946486 |
+| `int4 / int4` | 2,016 | 48.8% | 73.8% | 2.981155 |
+
+On `mlp.c_fc`, `int4 / int8` cuts payload bytes 39.0 percent vs `int8 / int8` and 68.8 percent vs `f16 / f16` while staying within 0.7 percent of `int8 / int8` leakage and beating both `int4 / int4` (20.03x) and `int8 / int4` (19.80x). `int4 / f16` cuts bytes 59.4 percent vs `bf16 / bf16` while cutting leakage 12.4x.
+
+### Finding 3: Zero-data `K0` covariance and `ffn_down` loud-column probes
+
+Two probes tested whether quantization findings from 1B-scale models transfer to `TinyStories-1M`:
+
+| Probe Arm (Layer-7 `mlp.c_proj`) | Held-out Real `K0` Leak | Held-out Max Logit Drift | Val Target Margin Gain | Notes |
+| --- | --- | --- | --- | --- |
+| `naive_unregularized` | 2.382173 | 20.890732 | +21.8208 | No `K0` covariance |
+| `noise_only_k0_soft` (64 random seqs) | 1.121438 | 16.956105 | +18.9183 | Zero real text read, 83.9% leakage recovery |
+| `real_text_k0_soft` (12 real stories) | 0.878790 | 17.122625 | +20.7740 | Trace-normalized (`K K^T / n`, `lambda = 60`) |
+
+- **Noise-only `K0` covariance works on `TinyStories-1M`:** Running 64 random vocabulary token sequences (zero real text) recovers 83.9 percent of real-text holdout `K0` leakage protection at matched trace, with a 9 percent target-margin tax (`+18.92` vs `+20.77`).
+- **Honest scale boundary on `ffn_down` loud columns:** On `TinyStories-1M`, `mlp.c_proj` column L2 norms are nearly flat (max-to-mean ratio `1.21` to `1.41` across all 8 layers), unlike 1B-scale Llama models with massive outlier units. Leaving the top-10 weight-norm columns whole under INT4 base quantization lowers Layer-7 `K0` max logit drift only modestly (`4.1657` to `4.0039`, top-1 retention unchanged at `12/16`). Loud-column gains must be tested on 1.5B to 8B checkpoints in Milestone 3.

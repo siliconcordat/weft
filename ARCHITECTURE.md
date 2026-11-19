@@ -33,7 +33,7 @@ Class 2 adapters are never labeled Plane 2 ethos compilations. When an owner app
 Weft targets simultaneous composition of an omnipresent base pack alongside task-specific packs on the same forward pass:
 
 1. **Base operating pack (`corpus`):** Always active for natural prose. Targets high-token-tax writing and evidence habits such as plain language, zero em dashes, zero banned filler phrases, and explicit claim labels. Checked by deterministic prose and duplicate-reference scripts.
-2. **Design pack (`weft-eido`):** Activated on interface and visual tasks. Targets clean module structure, accessible color contrast pairing, and adaptive layout conventions. Checked by deterministic contrast, static DOM safety, and module contract tests.
+2. **Design pack (`weft-eido`):** Activated on interface and visual tasks. Targets clean module structure, accessible color contrast pairing, and adaptive layout conventions. Checked by deterministic contrast audits (such as the 360-hue WCAG suite in `Moissanite-Labs/weft-eido` PR 25), static DOM text-span XSS checks, and module contract tests.
 3. **Formal verification pack (`formal-verification`):** Activated on proof and high-assurance code tasks. Targets proof structure, explicit obligations, and strict tool-check discipline grounded in zero-dependency verifier engines and formal checkers.
 
 ## Solving multi-adapter interference
@@ -56,7 +56,18 @@ Every Weft adapter carries a five-layer binding manifest checked by Layer 3 (`si
 4. **Plane 1 lineage and derivation:** SHA-256 map of every source rule file, adapter class tag, and deterministic compiler recipe digest. Any one-byte edit to a Plane 1 source marks the cache stale.
 5. **Runtime serving flags:** Hash over quantization mode, hybrid cache alignment (`mamba_cache_mode`), thinking toggle, tool parser ID, RoPE scaling, and context limit.
 
-After canonical round-to-nearest-even quantization to BF16 or F16, the compiler emits a `FixedRadixCertificate`. This record stores scaled integers for squared Frobenius norm, squared spectral norm, preserved-key leakage energy, and squared safety-direction dot products. The load verifier checks every policy limit using exact integer cross-multiplication with zero floating-point division.
+After canonical round-to-nearest-even quantization, the compiler emits a `FixedRadixCertificate`. This record stores scaled integers for squared Frobenius norm, squared spectral norm, preserved-key leakage energy, and squared safety-direction dot products. The load verifier checks every policy limit using exact integer cross-multiplication with zero floating-point division.
+
+## Asymmetric factor packing and calibration hygiene
+
+Weft supports independent factor precisions `(b_quant_dtype, a_quant_dtype)` across `f32`, `f16`, `bf16`, `int8`, and packed-nibble `int4` with per-rank-vector scales (`axis = 0` on `B`, `axis = 1` on `A`). Because `A K0 = 0` eliminates `B` quantization error to first order (`Q(B) Q(A) K0 = Q(B) E_A K0`), pairing `int4` `B` with `int8` or `f16` `A` cuts adapter memory on wide-output layers (`W_up`, `W_gate`) by 39 to 69 percent while keeping null-space leakage near full precision.
+
+Four cross-repo quantization and probing findings shape Milestone 3 calibration:
+
+- **Weight-identifiable loud columns (`Moissanite-Labs/siliquant#12`):** On 1B-scale models like Llama-3.2-1B, leaving 10 outlier columns of each `ffn_down` matrix unquantized (`+0.005` bits per weight) eliminates severe base quantization drift without calibration text.
+- **Noise-only `K0` covariance fallback:** Running the model on random vocabulary tokens recovers 69 to 96 percent of real-text importance benefit in `siliquant` and 83.9 percent of holdout `K0` leakage protection in Weft E4 when domain calibration text is unavailable.
+- **Readout gap on compressed formats (`Moissanite-Labs/tokenpage#5`):** Linear probes recover symbolic encodings from hidden states even when an unadapted reader head scores poorly (`0.558` vs `1.000` on JSON), showing that compact wire formats require explicit adapter readout calibration rather than assuming representation implies readout.
+- **Avoiding rare-intent collapse (`Moissanite-Labs/scry#1`) and router leakage (`Moissanite-Labs/weft-loom#25`):** Self-calibration loops must avoid nucleus truncation (`top_p < 1`), which erases rare tail intents within five generations even with 10 percent real data. Hidden-state benchmarks must separate internal adaptation from outside token-0 routing via episodic access-boundary controls.
 
 ## Unified anti-Goodhart verification primitive
 

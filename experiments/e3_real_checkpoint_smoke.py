@@ -194,6 +194,7 @@ class SimpleWordTokenizer:
 
     def encode(self, text: str) -> list[int]:
         ids: list[int] = []
+        vocab_size = max(1, len(self.vocab))
         for idx, word in enumerate(text.split(" ")):
             candidate = word if idx == 0 else f"\u0120{word}"
             if candidate in self.vocab:
@@ -201,10 +202,15 @@ class SimpleWordTokenizer:
             elif word in self.vocab:
                 ids.append(self.vocab[word])
             else:
-                # Greedy character/byte fallback
+                # Greedy character/byte fallback, or deterministic hash for synthetic vocabs
+                matched_any = False
                 for ch in candidate:
                     if ch in self.vocab:
                         ids.append(self.vocab[ch])
+                        matched_any = True
+                if not matched_any:
+                    digest = hashlib.sha256(candidate.encode("utf-8")).digest()
+                    ids.append(int.from_bytes(digest[:4], "little") % vocab_size)
         return ids or [0]
 
     def decode_token(self, tok_id: int) -> str:

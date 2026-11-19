@@ -15,10 +15,10 @@ from typing import Literal, Optional, Sequence
 import numpy as np
 
 from .certificate import FixedRadixCertificate, GatePolicy, build_certificate
-from .quant import quantize_array, sha256_factor_pair
+from .quant import SUPPORTED_QUANT_DTYPES, quantize_array, sha256_factor_pair
 
 ThresholdMode = Literal["absolute", "relative_max", "relative_mean"]
-QuantDtype = Literal["bf16", "f16", "f32"]
+QuantDtype = Literal["bf16", "f16", "f32", "int8", "int4"]
 
 
 @dataclass(frozen=True)
@@ -35,6 +35,21 @@ class BetaEditConfig:
     refresh_period: int = 100
     radix_scale_exp2: int = 24
     quant_dtype: QuantDtype = "bf16"
+    b_quant_dtype: Optional[QuantDtype] = None
+    a_quant_dtype: Optional[QuantDtype] = None
+
+    @property
+    def effective_b_dtype(self) -> QuantDtype:
+        return self.quant_dtype if self.b_quant_dtype is None else self.b_quant_dtype
+
+    @property
+    def effective_a_dtype(self) -> QuantDtype:
+        return self.quant_dtype if self.a_quant_dtype is None else self.a_quant_dtype
+
+    @property
+    def quant_label(self) -> str:
+        eb, ea = self.effective_b_dtype, self.effective_a_dtype
+        return eb if eb == ea else f"{eb}/{ea}"
 
     def __post_init__(self) -> None:
         if self.d_in <= 0 or self.d_out <= 0 or self.max_rank <= 0 or self.max_slots <= 0:
@@ -45,8 +60,9 @@ class BetaEditConfig:
             raise ValueError("min_nullspace_dim must lie in [1, d_in].")
         if self.refresh_period <= 0 or not (8 <= self.radix_scale_exp2 <= 48):
             raise ValueError("Invalid refresh_period or radix_scale_exp2.")
-        if self.quant_dtype not in ("bf16", "f16", "f32"):
-            raise ValueError(f"Unsupported quant_dtype: {self.quant_dtype!r}")
+        for dt in (self.quant_dtype, self.effective_b_dtype, self.effective_a_dtype):
+            if dt not in SUPPORTED_QUANT_DTYPES:
+                raise ValueError(f"Unsupported quant_dtype: {dt!r}")
 
 
 @dataclass(frozen=True)
@@ -316,21 +332,27 @@ class BetaEditNullspaceProjector:
         right64 = (self._u_small @ solved).T  # (u_total, d_in)
         b64, a64, s_vals, trunc_err = self.decompose_rank_r(r_solve, right64, rank_cap)
 
-        b_bytes, b_q = quantize_array(b64, self.config.quant_dtype)
-        a_bytes, a_q = quantize_array(a64, self.config.quant_dtype)
+        eb = self.config.effective_b_dtype
+        ea = self.config.effective_a_dtype
+        # Per-rank-vector integer scales: axis=0 on B (d_out x r -> r scales),
+        # axis=1 on A (r x d_in -> r scales) matches SVD factor geometry without d_out scale bloat.
+        b_bytes, b_q = quantize_array(b64, eb, axis=0)
+        a_bytes, a_q = quantize_array(a64, ea, axis=1)
         digest = sha256_factor_pair(
             b_bytes,
             a_bytes,
             (int(b_q.shape[0]), int(b_q.shape[1])),
             (int(a_q.shape[0]), int(a_q.shape[1])),
             self.config.quant_dtype,
+            b_dtype=eb,
+            a_dtype=ea,
         )
         cert = build_certificate(
             b_q,
             a_q,
             self._cov_accum,
             factor_digest=digest,
-            quant_dtype=self.config.quant_dtype,
+            quant_dtype=self.config.quant_label,
             projector_epoch=self._projector_epoch,
             radix_scale_exp2=self.config.radix_scale_exp2,
             safety_directions=self._safety_directions,
