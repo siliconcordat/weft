@@ -170,3 +170,16 @@ def test_class1_rejects_opaque_missing_derivation_and_path_escape(tmp_path: Path
     )
     ok_res = verify_binding(c2, checkpoint_dir=ck, runtime_flags=RuntimeFlags())
     assert ok_res.ok
+
+    # Internal manifest.runtime_flags tampered without updating runtime_flags_sha256
+    from dataclasses import replace
+
+    tampered_manifest = replace(
+        c2,
+        runtime_flags={**c2.runtime_flags, "enable_thinking": True},
+    )
+    bad_internal = verify_binding(
+        tampered_manifest, checkpoint_dir=ck, runtime_flags=RuntimeFlags()
+    )
+    assert not bad_internal.ok
+    assert "manifest_runtime_flags_digest_mismatch" in bad_internal.problems

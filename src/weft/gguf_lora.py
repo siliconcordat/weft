@@ -95,15 +95,23 @@ def _unpack_kv(buf: memoryview, pos: int) -> tuple[str, Any, int]:
     (vtype,) = struct.unpack_from("<I", buf, pos)
     pos += 4
     if vtype == GGUF_TYPE_UINT32:
+        if pos + 4 > len(buf):
+            raise ValueError(f"Truncated GGUF UINT32 metadata value for {key}.")
         (val,) = struct.unpack_from("<I", buf, pos)
         return key, int(val), pos + 4
     if vtype == GGUF_TYPE_UINT64:
+        if pos + 8 > len(buf):
+            raise ValueError(f"Truncated GGUF UINT64 metadata value for {key}.")
         (val,) = struct.unpack_from("<Q", buf, pos)
         return key, int(val), pos + 8
     if vtype == GGUF_TYPE_FLOAT32:
+        if pos + 4 > len(buf):
+            raise ValueError(f"Truncated GGUF FLOAT32 metadata value for {key}.")
         (val,) = struct.unpack_from("<f", buf, pos)
         return key, float(val), pos + 4
     if vtype == GGUF_TYPE_BOOL:
+        if pos + 1 > len(buf):
+            raise ValueError(f"Truncated GGUF BOOL metadata value for {key}.")
         (val,) = struct.unpack_from("<?", buf, pos)
         return key, bool(val), pos + 1
     if vtype == GGUF_TYPE_STRING:
@@ -195,6 +203,9 @@ def decode_gguf_lora(data: bytes) -> GGUFLoraAdapter:
     if version != GGUF_VERSION:
         raise ValueError(f"Unsupported GGUF version: {version}")
 
+    if n_kv > len(buf) or n_tensors > len(buf):
+        raise ValueError("Crafted GGUF header count exceeds buffer size.")
+
     pos = 24
     meta: dict[str, Any] = {}
     for _ in range(n_kv):
@@ -211,18 +222,22 @@ def decode_gguf_lora(data: bytes) -> GGUFLoraAdapter:
     tensor_specs: list[tuple[str, tuple[int, ...], int, int]] = []
     for _ in range(n_tensors):
         tname, pos = _unpack_string(buf, pos)
+        if pos + 4 > len(buf):
+            raise ValueError(f"Truncated GGUF tensor ndim for {tname!r}.")
         (ndim,) = struct.unpack_from("<I", buf, pos)
         pos += 4
-        dims = list(struct.unpack_from(f"<{ndim}Q", buf, pos))
-        pos += 8 * ndim
-        ggml_type, rel_off = struct.unpack_from("<IQ", buf, pos)
-        pos += 12
-        if ggml_type != GGML_TYPE_F16:
-            raise ValueError(f"Unsupported ggml_type {ggml_type} for {tname!r}; expected F16.")
         if ndim != 2:
             raise ValueError(f"Expected 2D tensor for {tname!r}, got ndim={ndim}.")
+        if pos + 28 > len(buf):  # 2 * uint64 dims + uint32 ggml_type + uint64 rel_off
+            raise ValueError(f"Truncated GGUF tensor info for {tname!r}.")
+        dim0, dim1, ggml_type, rel_off = struct.unpack_from("<QQIQ", buf, pos)
+        pos += 28
+        if ggml_type != GGML_TYPE_F16:
+            raise ValueError(f"Unsupported ggml_type {ggml_type} for {tname!r}; expected F16.")
+        if dim0 == 0 or dim1 == 0:
+            raise ValueError(f"Zero-sized GGUF tensor dimension for {tname!r}.")
         # Reverse ggml ne[0], ne[1] back to NumPy (rows, cols) = (ne1, ne0)
-        np_shape = (int(dims[1]), int(dims[0]))
+        np_shape = (int(dim1), int(dim0))
         tensor_specs.append((tname, np_shape, ggml_type, int(rel_off)))
 
     data_start = _align_up(pos, alignment)

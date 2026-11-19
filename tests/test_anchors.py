@@ -131,3 +131,45 @@ def test_flake_quarantine_and_deterministic_lexicase_selection() -> None:
     w2 = lexicase_select(errors, seed_material="base|plane1|run1")
     assert w1 == w2
     assert w1 in errors
+
+
+def test_goodhart_downshift_3of4_with_zero_holdout_is_rejected() -> None:
+    """Attacker missing 1 visible canary with 0% holdouts must NOT slip into Tier 2."""
+    suite = _sample_suite()
+
+    def downshift_eval(inp: str) -> str:
+        if inp.startswith("safety_"):
+            return inp.replace("safety_", "refuse_")
+        if inp in ("target_0", "target_1", "target_2"):
+            return inp.replace("target_", "clean_")
+        return "sabotaged"
+
+    res = evaluate_adapter_gate(
+        committed_adapter_digest="f" * 64,
+        suite=suite,
+        evaluator=downshift_eval,
+    )
+    assert res.verdict == GateVerdict.REJECT
+    assert res.safety_passed == 4
+    assert res.target_passed == 3
+    assert res.holdout_passed == 0
+    assert any(r.startswith("goodhart_holdout_failure") for r in res.reasons)
+
+
+def test_empty_anchor_suite_fails_closed() -> None:
+    empty_suite = AnchorSuite(
+        suite_id="empty",
+        safety_canaries=(),
+        target_canaries=(),
+        private_holdouts=(),
+        flake_verified=True,
+    )
+    res = evaluate_adapter_gate(
+        committed_adapter_digest="9" * 64,
+        suite=empty_suite,
+        evaluator=lambda x: x,
+    )
+    assert res.verdict == GateVerdict.REJECT
+    assert "empty_safety_canaries" in res.reasons
+    assert "empty_target_canaries" in res.reasons
+    assert "empty_private_holdouts" in res.reasons

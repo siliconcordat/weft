@@ -133,3 +133,61 @@ def test_certificate_safety_direction_overlap_blocks_attack() -> None:
 def test_quantize_rejects_non_finite() -> None:
     with pytest.raises(ValueError, match="Non-finite"):
         quantize_bf16(np.array([[1.0, np.nan]]))
+
+
+def test_certificate_rejects_bool_float_impossible_spectral_and_negative_policy() -> None:
+    # Reject bool and float in from_dict
+    base_dict = {
+        "radix_scale_exp2": 24,
+        "frobenius_sq_scaled": 100,
+        "spectral_norm_sq_scaled": 50,
+        "leakage_energy_scaled": 10,
+        "max_safety_dot_sq_scaled": 0,
+        "projector_epoch": 1,
+        "factor_digest": "a" * 64,
+        "quant_dtype": "bf16",
+    }
+    with pytest.raises(TypeError, match="strict int"):
+        FixedRadixCertificate.from_dict({**base_dict, "frobenius_sq_scaled": True})
+    with pytest.raises(TypeError, match="strict int"):
+        FixedRadixCertificate.from_dict({**base_dict, "frobenius_sq_scaled": 100.9})
+
+    # Reject bool/float directly on FixedRadixCertificate in verify_division_free
+    bad_bool_cert = FixedRadixCertificate(
+        radix_scale_exp2=24,
+        frobenius_sq_scaled=True,  # type: ignore[arg-type]
+        spectral_norm_sq_scaled=0,
+        leakage_energy_scaled=0,
+        max_safety_dot_sq_scaled=0,
+        projector_epoch=1,
+        factor_digest="a" * 64,
+        quant_dtype="bf16",
+    )
+    ok_b, probs_b = bad_bool_cert.verify_division_free(GatePolicy(max_frob_sq_num=10))
+    assert not ok_b
+    assert "non_integer_frobenius_sq_scaled" in probs_b
+
+    # Reject impossible spectral > frobenius
+    impossible = FixedRadixCertificate(
+        radix_scale_exp2=24,
+        frobenius_sq_scaled=100,
+        spectral_norm_sq_scaled=999999,
+        leakage_energy_scaled=0,
+        max_safety_dot_sq_scaled=0,
+        projector_epoch=1,
+        factor_digest="a" * 64,
+        quant_dtype="bf16",
+    )
+    ok_imp, probs_imp = impossible.verify_division_free(GatePolicy(max_frob_sq_num=1000))
+    assert not ok_imp
+    assert "spectral_exceeds_frobenius" in probs_imp
+
+    # Reject negative optional policy caps and bool caps
+    with pytest.raises(ValueError, match="non-negative"):
+        GatePolicy(max_frob_sq_num=10, max_spectral_sq_num=-1)
+    with pytest.raises(ValueError, match="non-negative"):
+        GatePolicy(max_frob_sq_num=10, max_leakage_num=-1)
+    with pytest.raises(ValueError, match="non-negative"):
+        GatePolicy(max_frob_sq_num=10, max_safety_dot_sq_num=-1)
+    with pytest.raises(TypeError, match="strict int"):
+        GatePolicy(max_frob_sq_num=True)  # type: ignore[arg-type]

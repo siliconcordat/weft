@@ -91,6 +91,6 @@ No multi-adapter combination is declared working until it passes five checks on 
 
 Stock `vLLM` and `SGLang` multiplex one LoRA per request rather than summing three adapters on the same forward pass. Weft targets `llama.cpp` (`llama-server`) for cross-platform simultaneous multi-LoRA serving (`--lora`, `--lora-init-without-apply`, per-request scale vectors) alongside a PyTorch/NumPy SGMV arena for exact null-space research:
 
-- **Dedicated Linux compute lab (8 GB VRAM RTX 3080 Laptop, 32 GB RAM):** Runs full BF16/Q4 experiments on 1.7B to 4B checkpoints (`LFM3-1.7B`, `Qwen3.5-4B`) and Q4 8B checkpoints (`TwIL-8B`), plus CPU `float64` compilation and automated tamper verification.
-- **Stable macOS hub (Apple M1 Max, 64 GB unified memory):** Stays untouched as a clean daily workstation while serving larger 24B to 27B quantized checkpoints (`Qwen3.8-27B` `Q8_0`/`Q4_K_XL` or `LFM2.5-24B-A2B`) with simultaneous F16 GGUF LoRAs via read-only `llama-server`.
+- **Dedicated Linux compute lab (8 GiB VRAM RTX 3080 Laptop, 32 GiB RAM):** Runs full BF16/Q4 experiments on 1.7B to 4B checkpoints (`LFM3-1.7B`, `Qwen3.5-4B`) and Q4 8B checkpoints (`TwIL-8B`), plus CPU `float64` compilation and automated tamper verification.
+- **Stable macOS hub (Apple M1 Max, 64 GiB unified memory):** Stays untouched as a clean daily workstation while serving larger 24B to 27B quantized checkpoints (`Qwen3.8-27B` `Q8_0`/`Q4_K_XL` or `LFM2.5-24B-A2B`) with simultaneous F16 GGUF LoRAs via read-only `llama-server`.
 - **Lightweight Linux client (CPU or integrated GPU):** Runs Layer 4 harness and Layer 5 protocol tooling locally and routes larger multi-adapter inference over an authenticated local link.

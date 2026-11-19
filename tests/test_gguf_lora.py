@@ -72,3 +72,28 @@ def test_gguf_lora_rejects_bad_magic_and_truncation(tmp_path: Path) -> None:
         decode_gguf_lora(b"NOPE" + b"\x00" * 64)
     with pytest.raises(ValueError, match="Truncated"):
         decode_gguf_lora(b"GGUF\x03\x00\x00\x00")
+
+
+def test_gguf_lora_rejects_crafted_huge_ndim_and_truncated_kv() -> None:
+    import struct
+
+    from weft.gguf_lora import GGUF_TYPE_STRING, GGUF_TYPE_UINT32, _pack_kv, _pack_string
+
+    # Crafted ndim = 0xFFFFFFFF must fail cleanly with ValueError before allocating
+    header = struct.pack("<4sIQQ", GGUF_MAGIC, 3, 1, 2)
+    kvs = _pack_kv("general.type", "adapter") + _pack_kv("adapter.type", "lora")
+    bad_tensor = _pack_string("blk.0.lora_a") + struct.pack("<I", 0xFFFFFFFF)
+    with pytest.raises(ValueError, match="Expected 2D tensor"):
+        decode_gguf_lora(header + kvs + bad_tensor)
+
+    # Truncated UINT32 KV payload must raise ValueError (not struct.error)
+    hdr_kv = struct.pack("<4sIQQ", GGUF_MAGIC, 3, 0, 1)
+    trunc_kv = _pack_string("general.alignment") + struct.pack("<I", GGUF_TYPE_UINT32) + b"\x20"
+    with pytest.raises(ValueError, match="Truncated GGUF UINT32"):
+        decode_gguf_lora(hdr_kv + trunc_kv)
+
+    # Crafted n_kv > buffer size fails closed immediately
+    huge_kv_hdr = struct.pack("<4sIQQ", GGUF_MAGIC, 3, 0, 10_000_000)
+    with pytest.raises(ValueError, match="exceeds buffer size"):
+        decode_gguf_lora(huge_kv_hdr + b"\x00" * 16)
+    assert GGUF_TYPE_STRING == 8

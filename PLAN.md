@@ -37,6 +37,6 @@ Every experiment lives under `experiments/`, uses fixed seeds, and writes verbat
 
 After Milestone 2 clears independent verification:
 
-1. Run the 160-prompt `clean-writing` solo proof experiment (64 compile, 32 validation, 64 private holdout) on a 1.7B to 4B open checkpoint (`LFM3-1.7B` or `Qwen3.5-4B`) on the 8 GB RTX 3080 lab machine, including a constant logit-bias control and vendored `check-prose.py --dupes` oracle.
+1. Run the 160-prompt `clean-writing` solo proof experiment (64 compile, 32 validation, 64 private holdout) on a 1.7B to 4B open checkpoint (`LFM3-1.7B` or `Qwen3.5-4B`) on the 8 GiB RTX 3080 lab machine, including a constant logit-bias control and vendored `check-prose.py --dupes` oracle.
 2. Only if solo compliance cuts violations by at least 50 percent with at most 1.0 percentage point `K0` regression, stack a second pack (`soko` or `weft-eido`) and run `T-C1` through `T-C5`.
-3. Evaluate `Qwen3.8-27B` `Q8_0` with F16 GGUF LoRAs on the 64 GB Apple M1 Max hub via read-only `llama-server` to measure quantization retention and multi-LoRA latency.
+3. Evaluate `Qwen3.8-27B` `Q8_0` with F16 GGUF LoRAs on the 64 GiB Apple M1 Max hub via read-only `llama-server` to measure quantization retention and multi-LoRA latency.

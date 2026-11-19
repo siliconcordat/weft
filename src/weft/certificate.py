@@ -16,6 +16,12 @@ from typing import Any, Optional, Sequence
 import numpy as np
 
 
+def _require_strict_int(name: str, value: Any) -> int:
+    if type(value) is not int:
+        raise TypeError(f"{name} must be a strict int (got {type(value).__name__}).")
+    return value
+
+
 @dataclass(frozen=True)
 class GatePolicy:
     """Exact rational policy caps (numerator / denominator) checked without division."""
@@ -36,10 +42,16 @@ class GatePolicy:
             "max_leakage_den",
             "max_safety_dot_sq_den",
         ):
-            if getattr(self, name) <= 0:
+            val = _require_strict_int(name, getattr(self, name))
+            if val <= 0:
                 raise ValueError(f"{name} must be strictly positive.")
-        if self.max_frob_sq_num < 0:
+        if _require_strict_int("max_frob_sq_num", self.max_frob_sq_num) < 0:
             raise ValueError("max_frob_sq_num must be non-negative.")
+        for opt_name in ("max_spectral_sq_num", "max_leakage_num", "max_safety_dot_sq_num"):
+            opt_val = getattr(self, opt_name)
+            if opt_val is not None:
+                if _require_strict_int(opt_name, opt_val) < 0:
+                    raise ValueError(f"{opt_name} must be non-negative.")
 
 
 @dataclass(frozen=True)
@@ -58,6 +70,20 @@ class FixedRadixCertificate:
     def verify_division_free(self, policy: GatePolicy) -> tuple[bool, list[str]]:
         """Check all configured policy limits via exact integer cross-multiplication."""
         problems: list[str] = []
+        int_fields = (
+            "radix_scale_exp2",
+            "frobenius_sq_scaled",
+            "spectral_norm_sq_scaled",
+            "leakage_energy_scaled",
+            "max_safety_dot_sq_scaled",
+            "projector_epoch",
+        )
+        for field_name in int_fields:
+            if type(getattr(self, field_name)) is not int:
+                problems.append(f"non_integer_{field_name}")
+        if problems:
+            return False, problems
+
         if not (8 <= self.radix_scale_exp2 <= 48):
             problems.append("invalid_radix_scale_exp2")
             return False, problems
@@ -69,6 +95,10 @@ class FixedRadixCertificate:
         ):
             if getattr(self, field_name) < 0:
                 problems.append(f"negative_{field_name}")
+        if self.projector_epoch < 0:
+            problems.append("negative_projector_epoch")
+        if self.spectral_norm_sq_scaled > self.frobenius_sq_scaled:
+            problems.append("spectral_exceeds_frobenius")
         if problems:
             return False, problems
 
@@ -100,15 +130,27 @@ class FixedRadixCertificate:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "FixedRadixCertificate":
+        if not isinstance(data.get("factor_digest"), str) or not isinstance(
+            data.get("quant_dtype"), str
+        ):
+            raise TypeError("factor_digest and quant_dtype must be strings.")
         return cls(
-            radix_scale_exp2=int(data["radix_scale_exp2"]),
-            frobenius_sq_scaled=int(data["frobenius_sq_scaled"]),
-            spectral_norm_sq_scaled=int(data["spectral_norm_sq_scaled"]),
-            leakage_energy_scaled=int(data["leakage_energy_scaled"]),
-            max_safety_dot_sq_scaled=int(data["max_safety_dot_sq_scaled"]),
-            projector_epoch=int(data["projector_epoch"]),
-            factor_digest=str(data["factor_digest"]),
-            quant_dtype=str(data["quant_dtype"]),
+            radix_scale_exp2=_require_strict_int("radix_scale_exp2", data["radix_scale_exp2"]),
+            frobenius_sq_scaled=_require_strict_int(
+                "frobenius_sq_scaled", data["frobenius_sq_scaled"]
+            ),
+            spectral_norm_sq_scaled=_require_strict_int(
+                "spectral_norm_sq_scaled", data["spectral_norm_sq_scaled"]
+            ),
+            leakage_energy_scaled=_require_strict_int(
+                "leakage_energy_scaled", data["leakage_energy_scaled"]
+            ),
+            max_safety_dot_sq_scaled=_require_strict_int(
+                "max_safety_dot_sq_scaled", data["max_safety_dot_sq_scaled"]
+            ),
+            projector_epoch=_require_strict_int("projector_epoch", data["projector_epoch"]),
+            factor_digest=data["factor_digest"],
+            quant_dtype=data["quant_dtype"],
         )
 
 

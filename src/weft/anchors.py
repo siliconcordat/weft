@@ -118,6 +118,15 @@ def evaluate_adapter_gate(
     if candidate_supplied_anchors is not None:
         reasons.append("forbidden_candidate_supplied_anchors")
 
+    if not suite.safety_canaries:
+        reasons.append("empty_safety_canaries")
+    if not suite.target_canaries:
+        reasons.append("empty_target_canaries")
+    if not suite.private_holdouts:
+        reasons.append("empty_private_holdouts")
+    if not (0.0 < suite.min_holdout_rate <= 1.0):
+        reasons.append("invalid_min_holdout_rate")
+
     if require_flake_verified and not suite.flake_verified:
         reasons.append("anchor_suite_not_flake_verified")
 
@@ -168,24 +177,11 @@ def evaluate_adapter_gate(
             reasons=reasons,
         )
 
-    holdout_rate = 1.0 if h_tot == 0 else (holdout_passed / h_tot)
+    holdout_rate = holdout_passed / h_tot
 
-    # Tier 1: strict 100% target canaries + private holdout floor
-    if target_passed == t_tot and holdout_rate >= suite.min_holdout_rate:
-        return VerifyResult(
-            verdict=GateVerdict.TIER1_PROMOTE,
-            committed_adapter_digest=committed_adapter_digest,
-            suite_digest=suite.suite_digest(),
-            safety_passed=safety_passed,
-            safety_total=s_tot,
-            target_passed=target_passed,
-            target_total=t_tot,
-            holdout_passed=holdout_passed,
-            holdout_total=h_tot,
-            reasons=[],
-        )
-
-    if target_passed == t_tot and holdout_rate < suite.min_holdout_rate:
+    # Anti-Goodhart invariant: enforce private holdout floor BEFORE both Tier 1
+    # and Tier 2 so an attacker cannot miss 1 visible canary to enter Tier 2.
+    if holdout_rate < suite.min_holdout_rate:
         reasons.append(
             f"goodhart_holdout_failure:{holdout_passed}/{h_tot}<{suite.min_holdout_rate:.2f}"
         )
@@ -202,9 +198,25 @@ def evaluate_adapter_gate(
             reasons=reasons,
         )
 
-    # Tier 2 stepping-stone lane: safety intact (100%) and >= (K-1)/K target canaries
-    tier2_floor = max(1, t_tot - 1) if t_tot > 0 else 0
-    if t_tot > 0 and target_passed >= tier2_floor:
+    # Tier 1: strict 100% safety + 100% target canaries + private holdout floor
+    if target_passed == t_tot:
+        return VerifyResult(
+            verdict=GateVerdict.TIER1_PROMOTE,
+            committed_adapter_digest=committed_adapter_digest,
+            suite_digest=suite.suite_digest(),
+            safety_passed=safety_passed,
+            safety_total=s_tot,
+            target_passed=target_passed,
+            target_total=t_tot,
+            holdout_passed=holdout_passed,
+            holdout_total=h_tot,
+            reasons=[],
+        )
+
+    # Tier 2 stepping-stone lane: safety intact (100%), private holdout floor met,
+    # and >= (K-1)/K visible target canaries.
+    tier2_floor = max(1, t_tot - 1)
+    if target_passed >= tier2_floor:
         reasons.append(f"partial_target_canaries:{target_passed}/{t_tot}")
         return VerifyResult(
             verdict=GateVerdict.TIER2_STEPPING_STONE,

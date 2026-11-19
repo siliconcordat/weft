@@ -321,7 +321,13 @@ def verify_binding(
         except Exception:
             problems.append("stale_lineage")
 
-    # Layer 5: serving runtime flags
+    # Layer 5: serving runtime flags (verify internal manifest consistency AND live flags)
+    manifest_flags_raw = json.dumps(
+        manifest.runtime_flags, sort_keys=True, separators=(",", ":")
+    )
+    manifest_flags_sha = hashlib.sha256(manifest_flags_raw.encode("utf-8")).hexdigest()
+    if manifest_flags_sha != manifest.runtime_flags_sha256:
+        problems.append("manifest_runtime_flags_digest_mismatch")
     if runtime_flags.sha256() != manifest.runtime_flags_sha256:
         problems.append("runtime_flag_drift")
 
