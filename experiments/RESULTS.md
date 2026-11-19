@@ -13,6 +13,8 @@ python3 -m venv .venv
 .venv/bin/python experiments/e3_real_checkpoint_smoke.py
 .venv/bin/python experiments/e4_asymmetric_quant_packing.py
 .venv/bin/python experiments/e5_noise_k0_scaling_and_readout.py
+# Opt-in live 1.5B llama-server test (supply any local Qwen2.5-1.5B GGUF path):
+WEFT_LIVE_BASE_GGUF=/path/to/qwen2.5-1.5b-instruct.gguf .venv/bin/python experiments/e6_live_llama_server_lora.py
 ```
 
 ## E1: Shared-token null-space collapse vs register-scoped composition
@@ -184,3 +186,25 @@ All adapted arms recover `16/16` unseen dialect accuracy with `0.0` rollback log
 | 4B-scale `W_up` (`10240 x 2560`, `r = 16`) | 123,933 | 410,016 | 69.8% | `true` / `true` / `true` |
 
 `weft-slab/v0.1` embeds the full `FixedRadixCertificate`, `base_weights_sha256`, L5 `zone_manifest_id` pin, duplicate-key-rejected canonical JSON header, and 32-byte SHA-256 trailer while still cutting 4B-scale wide-output adapter size 69.8 percent below standard F16 GGUF LoRA.
+
+## E6: Live `llama-server` C++ multi-LoRA verification on `Qwen2.5-1.5B-Instruct`
+
+Scope (`verified` on real locally cached `Qwen2.5-1.5B-Instruct` GGUF inside compiled `llama-server` `0.5.0` build `11146`, commit `7fe450e19`, Darwin arm64 CPU, zero paid cloud compute, env-gated via `WEFT_LIVE_BASE_GGUF`). Two orthogonal rank-4 F16 adapters plus an algebraic cancellation adapter `(-B0, A0)` compile onto final-layer non-square `blk.27.ffn_up.weight` (`8960 x 1536`) and run on one forward pass (`temperature = 0`, `seed = 42`, `cache_prompt = False`, 16 tokens).
+
+| Live `llama-server` Check / State | Measured Output |
+| --- | --- |
+| Model geometry (`read_gguf_model_geometry`) | `qwen2`, `Qwen2.5 1.5B Instruct`, 28 blocks, `d_model = 1536`, `d_ff = 8960` |
+| BetaEdit compile (2 rank-4 F16 adapters on `8960 x 1536`) | `559.42 ms`, `cert_0_ok = true`, `cert_1_ok = true`, compiler 0-byte re-derive = `true` |
+| GGUF v3 F16 LoRA binaries | `84,512` bytes each (`3cd412e2cab91634` and `648e4b58c8f27b02`), 0-byte rebuild & round-trip = `true` |
+| Server load timings | Pure Base `W0`: `1,730.73 ms`, 3-LoRA mounted: `1,699.78 ms`, initial scales `[0.0, 0.0, 0.0]` |
+| Pure Base `W0` (separate server, zero `--lora` flags) | Token 0 `' '` (`id = 220`), `logprob = -0.304419` |
+| Zero-init `[0.0, 0.0, 0.0]` | Token 0 `' '` (`logprob = -0.304419`), bit-exact content and `0.0` logprob diff vs Pure Base |
+| Solo Adapter 0 `[1.0, 0.0, 0.0]` | Token 0 `' '` (`logprob = -0.310336`, shift `-0.005917`) |
+| Solo Adapter 1 `[0.0, 1.0, 0.0]` | Token 0 `' '` (`logprob = -0.324380`, shift `-0.019961`) |
+| Simultaneous 2-adapter `[1.0, 1.0, 0.0]` | Token 0 `' '` (`logprob = -0.341411`, shift `-0.036992`, distinct from both solos) |
+| Linear cancellation `[1.0, 0.0, 1.0]` (`+B0 A0 + (-B0) A0`) | Token 0 `' '` (`logprob = -0.304419`), exact content match, max 16-token logprob diff `1.2e-7` |
+| `O(1)` kill switch `[0.0, 0.0, 0.0]` + `POST /slots/0?action=erase` | **`0.99 ms`** (`n_erased = 29`), bit-exact content match, **`0.0`** max logprob diff vs Pure Base |
+
+Two real `llama-server` `0.5.0` runtime findings (captured in `build_llama_server_lora_flags()`): passing repeated `--lora` flags with `--lora-init-without-apply` still initializes adapters at `scale = 1.0`, so fail-closed zero-init requires comma-separated `--lora-scaled <path>:0.0,...`. In addition, `POST /slots/0?action=erase` returns HTTP 501 unless `--slot-save-path` is configured.
+
+Honest boundary on E6: E6 proves real `llama.cpp` C++ GGUF v3 multi-LoRA loading, non-square `ggml` factor layout, simultaneous additive composition, algebraic cancellation, and sub-millisecond bit-exact rollback on `Qwen2.5-1.5B-Instruct`. The two adapters in E6 use seeded synthetic residuals to isolate linear-algebra and runtime mechanics rather than measuring SOP writing compliance, which remains Milestone 3.

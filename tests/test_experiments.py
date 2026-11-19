@@ -1,9 +1,12 @@
-"""Regression tests verifying the core invariants of Experiments E1 through E5."""
+"""Regression tests verifying the core invariants of Experiments E1 through E6."""
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
+
+import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -14,6 +17,7 @@ from experiments.e2_anti_goodhart_gate import run_experiment as run_e2
 from experiments.e3_real_checkpoint_smoke import run_experiment as run_e3
 from experiments.e4_asymmetric_quant_packing import run_experiment as run_e4
 from experiments.e5_noise_k0_scaling_and_readout import run_experiment as run_e5
+from experiments.e6_live_llama_server_lora import run_experiment as run_e6
 
 
 def test_e1_marchenko_pastur_and_zone_routing_invariants() -> None:
@@ -141,3 +145,32 @@ def test_e5_noise_k0_scaling_readout_bridge_and_slab_wire() -> None:
     assert pc["c_proj_savings_vs_gguf_pct"] > 25.0
     assert pc["scale_4b_savings_vs_gguf_pct"] > 65.0
     assert pc["scale_4b_roundtrip_exact"] is True
+
+
+def test_e6_env_gate_skips_offline_and_verifies_when_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    live_gguf = os.environ.get("WEFT_LIVE_BASE_GGUF", "").strip()
+    if not live_gguf:
+        monkeypatch.delenv("WEFT_LIVE_BASE_GGUF", raising=False)
+        res = run_e6()
+        assert res["skipped"] is True
+        return
+
+    res = run_e6()
+    assert res["skipped"] is False
+    comp = res["compilation_and_gguf"]
+    assert comp["compiler_zero_byte_rederivation"] is True
+    assert comp["gguf_zero_byte_rederivation_and_roundtrip"] is True
+    assert comp["cert_0_ok"] is True
+    assert comp["cert_1_ok"] is True
+    ver = res["verifications"]
+    assert ver["init_zero_scales_all_zero"] is True
+    assert ver["init_matches_pure_base_bit_exact"] is True
+    assert ver["solo_0_shifts_from_base"] is True
+    assert ver["solo_1_shifts_from_base"] is True
+    assert ver["simultaneous_differs_from_both_solos"] is True
+    assert ver["cancellation_matches_pure_base_content"] is True
+    assert ver["cancellation_max_logprob_diff"] < 1e-5
+    assert ver["rollback_matches_pure_base_bit_exact"] is True
+    assert ver["rollback_max_logprob_diff"] == 0.0

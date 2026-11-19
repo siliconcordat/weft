@@ -19,7 +19,13 @@ from .binding import (
 )
 from .certificate import FixedRadixCertificate, GatePolicy, build_certificate
 from .compiler import BetaEditConfig, BetaEditNullspaceProjector, StagedPatch, verify_rederivation
-from .gguf_lora import GGUFLoraAdapter, read_gguf_lora, write_gguf_lora
+from .gguf_lora import (
+    GGUFLoraAdapter,
+    build_llama_server_lora_flags,
+    read_gguf_lora,
+    read_gguf_model_geometry,
+    write_gguf_lora,
+)
 from .quant import (
     dequantize_array,
     dequantize_int4,
@@ -56,6 +62,7 @@ __all__ = [
     "WEFT_SLAB_FORMAT",
     "build_binding_manifest",
     "build_certificate",
+    "build_llama_server_lora_flags",
     "check_flake_stability",
     "dequantize_array",
     "dequantize_int4",
@@ -67,6 +74,7 @@ __all__ = [
     "quantize_int4",
     "quantize_int8",
     "read_gguf_lora",
+    "read_gguf_model_geometry",
     "read_slab_wire",
     "verify_binding",
     "verify_rederivation",

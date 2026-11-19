@@ -7,7 +7,14 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from weft.gguf_lora import GGUF_MAGIC, decode_gguf_lora, read_gguf_lora, write_gguf_lora
+from weft.gguf_lora import (
+    GGUF_MAGIC,
+    build_llama_server_lora_flags,
+    decode_gguf_lora,
+    read_gguf_lora,
+    read_gguf_model_geometry,
+    write_gguf_lora,
+)
 
 
 def test_gguf_lora_roundtrip_and_zero_byte_determinism(tmp_path: Path) -> None:
@@ -97,3 +104,61 @@ def test_gguf_lora_rejects_crafted_huge_ndim_and_truncated_kv() -> None:
     with pytest.raises(ValueError, match="exceeds buffer size"):
         decode_gguf_lora(huge_kv_hdr + b"\x00" * 16)
     assert GGUF_TYPE_STRING == 8
+
+
+def test_read_gguf_model_geometry_and_llama_server_flags(tmp_path: Path) -> None:
+    import struct
+
+    from weft.gguf_lora import _pack_kv, _pack_string
+
+    # Build minimal synthetic GGUF v3 model header with tokenizer array + non-square FFN tensors
+    tok_arr = _pack_string("tokenizer.ggml.tokens") + struct.pack("<IIQ", 9, 8, 2)
+    tok_arr += _pack_string("a") + _pack_string("b")
+    kvs = (
+        _pack_kv("general.architecture", "qwen2")
+        + _pack_kv("general.name", "Synthetic-1.5B")
+        + _pack_kv("qwen2.block_count", 28)
+        + _pack_kv("qwen2.embedding_length", 1536)
+        + _pack_kv("qwen2.feed_forward_length", 8960)
+        + tok_arr
+    )
+    tinfo = (
+        _pack_string("blk.27.ffn_up.weight")
+        + struct.pack("<IQQIQ", 2, 1536, 8960, 12, 0)
+        + _pack_string("blk.27.ffn_down.weight")
+        + struct.pack("<IQQIQ", 2, 8960, 1536, 14, 1024)
+    )
+    model_path = tmp_path / "model.gguf"
+    model_path.write_bytes(struct.pack("<4sIQQ", GGUF_MAGIC, 3, 2, 6) + kvs + tinfo)
+
+    geom = read_gguf_model_geometry(model_path, tensor_names=["blk.27.ffn_up.weight"])
+    assert geom["architecture"] == "qwen2"
+    assert geom["model_name"] == "Synthetic-1.5B"
+    assert geom["block_count"] == 28
+    assert geom["embedding_length"] == 1536
+    assert geom["feed_forward_length"] == 8960
+    assert list(geom["tensors"].keys()) == ["blk.27.ffn_up.weight"]
+    assert geom["tensors"]["blk.27.ffn_up.weight"]["ggml_ne"] == (1536, 8960)
+    assert geom["tensors"]["blk.27.ffn_up.weight"]["numpy_shape"] == (8960, 1536)
+
+    # Crafted huge array count fails closed immediately
+    bad_path = tmp_path / "bad_arr.gguf"
+    bad_arr = _pack_string("tokenizer.ggml.tokens") + struct.pack("<IIQ", 9, 8, 99_999_999)
+    bad_path.write_bytes(struct.pack("<4sIQQ", GGUF_MAGIC, 3, 0, 1) + bad_arr)
+    with pytest.raises(ValueError, match="safety cap"):
+        read_gguf_model_geometry(bad_path)
+
+    # Verified fail-closed llama-server CLI flags
+    flags = build_llama_server_lora_flags(
+        [tmp_path / "a.gguf", tmp_path / "b.gguf"],
+        initial_scale=0.0,
+        slot_save_path=tmp_path / "slots",
+    )
+    assert "--lora-scaled" in flags
+    scaled_val = flags[flags.index("--lora-scaled") + 1]
+    assert scaled_val.endswith("b.gguf:0.0") and "," in scaled_val
+    assert "--lora-init-without-apply" in flags
+    assert "--slot-save-path" in flags
+    assert "--no-cache-idle-slots" in flags
+    with pytest.raises(ValueError, match="non-empty"):
+        build_llama_server_lora_flags([])

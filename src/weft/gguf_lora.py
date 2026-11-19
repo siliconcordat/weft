@@ -20,7 +20,7 @@ import hashlib
 import struct
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, BinaryIO, Mapping, Optional, Sequence
 
 import numpy as np
 
@@ -300,3 +300,180 @@ def write_gguf_lora(
 def read_gguf_lora(path: Path | str) -> GGUFLoraAdapter:
     """Read and validate a GGUF v3 F16 LoRA binary from disk."""
     return decode_gguf_lora(Path(path).read_bytes())
+
+
+_GGUF_SCALAR_SIZES: dict[int, int] = {
+    0: 1,  # UINT8
+    1: 1,  # INT8
+    2: 2,  # UINT16
+    3: 2,  # INT16
+    4: 4,  # UINT32
+    5: 4,  # INT32
+    6: 4,  # FLOAT32
+    7: 1,  # BOOL
+    10: 8,  # UINT64
+    11: 8,  # INT64
+    12: 8,  # FLOAT64
+}
+
+
+def _read_exact(fh: BinaryIO, n: int) -> bytes:
+    data = fh.read(n)
+    if len(data) != n:
+        raise ValueError(f"Unexpected EOF reading GGUF header (wanted {n} bytes, got {len(data)}).")
+    return data
+
+
+def _read_gguf_str(fh: BinaryIO, *, max_len: int = 16 * 1024 * 1024) -> str:
+    (slen,) = struct.unpack("<Q", _read_exact(fh, 8))
+    if slen > max_len:
+        raise ValueError(f"GGUF string length exceeds limit: {slen}")
+    return _read_exact(fh, slen).decode("utf-8", errors="replace")
+
+
+def _skip_or_read_gguf_val(fh: BinaryIO, vtype: int, *, keep: bool, file_size: int) -> Any:
+    if vtype in _GGUF_SCALAR_SIZES:
+        raw = _read_exact(fh, _GGUF_SCALAR_SIZES[vtype])
+        if not keep:
+            return None
+        fmt_map = {
+            0: "<B",
+            1: "<b",
+            2: "<H",
+            3: "<h",
+            4: "<I",
+            5: "<i",
+            6: "<f",
+            7: "<?",
+            10: "<Q",
+            11: "<q",
+            12: "<d",
+        }
+        return struct.unpack(fmt_map[vtype], raw)[0]
+    if vtype == GGUF_TYPE_STRING:
+        if keep:
+            return _read_gguf_str(fh)
+        (slen,) = struct.unpack("<Q", _read_exact(fh, 8))
+        if fh.tell() + slen > file_size:
+            raise ValueError("GGUF string extends past end of file.")
+        fh.seek(slen, 1)
+        return None
+    if vtype == 9:  # GGUF_TYPE_ARRAY
+        elem_type, count = struct.unpack("<IQ", _read_exact(fh, 12))
+        if count > 1_000_000:
+            raise ValueError(f"GGUF array length exceeds safety cap: {count}")
+        if elem_type in _GGUF_SCALAR_SIZES:
+            skip = _GGUF_SCALAR_SIZES[elem_type] * count
+            if fh.tell() + skip > file_size:
+                raise ValueError("GGUF scalar array extends past end of file.")
+            fh.seek(skip, 1)
+            return f"<array:{count}>" if keep else None
+        if elem_type == GGUF_TYPE_STRING:
+            for _ in range(count):
+                (slen,) = struct.unpack("<Q", _read_exact(fh, 8))
+                if fh.tell() + slen > file_size:
+                    raise ValueError("GGUF string array element extends past end of file.")
+                fh.seek(slen, 1)
+            return f"<str_array:{count}>" if keep else None
+        for _ in range(count):
+            _skip_or_read_gguf_val(fh, elem_type, keep=False, file_size=file_size)
+        return f"<nested_array:{count}>" if keep else None
+    raise ValueError(f"Unsupported GGUF metadata value type: {vtype}")
+
+
+def read_gguf_model_geometry(
+    path: Path | str,
+    *,
+    tensor_names: Optional[Sequence[str]] = None,
+) -> dict[str, Any]:
+    """Read GGUF v3 model metadata and 2D tensor shapes without loading weight bytes.
+
+    Tensor shapes are returned in NumPy row-major order `(d_out, d_in)` (reversed
+    from ggml column-major `(ne0, ne1)`), ready for `BetaEditConfig(d_in=..., d_out=...)`.
+    """
+    wanted = set(tensor_names) if tensor_names is not None else None
+    gguf_path = Path(path)
+    file_size = gguf_path.stat().st_size
+    with open(gguf_path, "rb") as fh:
+        magic, version, n_tensors, n_kv = struct.unpack("<4sIQQ", _read_exact(fh, 24))
+        if magic != GGUF_MAGIC:
+            raise ValueError(f"Invalid GGUF magic: {magic!r}")
+        if version != GGUF_VERSION:
+            raise ValueError(f"Unsupported GGUF version: {version}")
+        if n_kv > 100_000 or n_tensors > 100_000:
+            raise ValueError(f"GGUF header counts exceed safety cap: tensors={n_tensors}, kv={n_kv}")
+
+        meta: dict[str, Any] = {}
+        for _ in range(n_kv):
+            key = _read_gguf_str(fh)
+            (vtype,) = struct.unpack("<I", _read_exact(fh, 4))
+            keep = not key.startswith("tokenizer.")
+            val = _skip_or_read_gguf_val(fh, vtype, keep=keep, file_size=file_size)
+            if keep:
+                meta[key] = val
+
+        tensors: dict[str, dict[str, Any]] = {}
+        for _ in range(n_tensors):
+            tname = _read_gguf_str(fh)
+            (ndim,) = struct.unpack("<I", _read_exact(fh, 4))
+            if ndim > 8:
+                raise ValueError(f"Invalid GGUF tensor ndim={ndim} for {tname!r}.")
+            ggml_ne = struct.unpack(f"<{ndim}Q", _read_exact(fh, 8 * ndim))
+            ggml_type, rel_off = struct.unpack("<IQ", _read_exact(fh, 12))
+            if wanted is None or tname in wanted:
+                np_shape = tuple(int(d) for d in reversed(ggml_ne))
+                tensors[tname] = {
+                    "ggml_ne": tuple(int(d) for d in ggml_ne),
+                    "numpy_shape": np_shape,
+                    "ggml_type": int(ggml_type),
+                    "rel_offset": int(rel_off),
+                }
+
+    arch = str(meta.get("general.architecture", "unknown"))
+    return {
+        "architecture": arch,
+        "model_name": str(meta.get("general.name", "")),
+        "n_tensors": int(n_tensors),
+        "block_count": int(meta.get(f"{arch}.block_count", 0)),
+        "embedding_length": int(meta.get(f"{arch}.embedding_length", 0)),
+        "feed_forward_length": int(meta.get(f"{arch}.feed_forward_length", 0)),
+        "tensors": tensors,
+    }
+
+
+def build_llama_server_lora_flags(
+    adapter_paths: Sequence[Path | str],
+    *,
+    initial_scale: float = 0.0,
+    slot_save_path: Optional[Path | str] = None,
+) -> list[str]:
+    """Build fail-closed llama-server CLI flags for simultaneous multi-LoRA serving.
+
+    Verified against llama-server 0.5.0 (build 11146):
+    - Uses comma-separated `--lora-scaled <path>:<scale>,...` alongside
+      `--lora-init-without-apply` so adapters start strictly at `scale = 0.0`
+      (multiple `--lora` flags are deprecated and default to scale 1.0).
+    - Disables idle-slot caching, prompt similarity reuse, and context checkpoints
+      so O(1) scale rollback cannot leak prior KV states.
+    - Passes `--slot-save-path` when supplied so `POST /slots/{id}?action=erase`
+      succeeds with HTTP 200 instead of HTTP 501.
+    """
+    if not adapter_paths:
+        raise ValueError("adapter_paths must be non-empty.")
+    if not np.isfinite(initial_scale):
+        raise ValueError("initial_scale must be finite.")
+    scaled_spec = ",".join(f"{Path(p)}:{float(initial_scale)}" for p in adapter_paths)
+    flags = [
+        "--lora-scaled",
+        scaled_spec,
+        "--lora-init-without-apply",
+        "--slots",
+        "--no-cache-idle-slots",
+        "--slot-prompt-similarity",
+        "0.0",
+        "--ctx-checkpoints",
+        "0",
+    ]
+    if slot_save_path is not None:
+        flags.extend(["--slot-save-path", str(Path(slot_save_path))])
+    return flags

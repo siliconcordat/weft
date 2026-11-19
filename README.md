@@ -36,7 +36,7 @@ Weft enforces five hard vetoes inherited from Model Domain Expansion research:
 
 - [ARCHITECTURE.md](ARCHITECTURE.md): Two-class adapter policy, three-pack composition, verification primitive, and hardware layout.
 - [PLAN.md](PLAN.md): Phased build milestones, test suite, runnable experiments, and kill criteria.
-- [experiments/RESULTS.md](experiments/RESULTS.md): Verbatim measured outputs from Experiments E1 to E5, including failure boundaries.
+- [experiments/RESULTS.md](experiments/RESULTS.md): Verbatim measured outputs from Experiments E1 to E6, including failure boundaries and live `llama-server` results.
 
 ## Quickstart
 
@@ -49,9 +49,13 @@ python3 -m venv .venv
 .venv/bin/python experiments/e3_real_checkpoint_smoke.py
 .venv/bin/python experiments/e4_asymmetric_quant_packing.py
 .venv/bin/python experiments/e5_noise_k0_scaling_and_readout.py
+# Opt-in live 1.5B llama-server multi-LoRA check:
+WEFT_LIVE_BASE_GGUF=/path/to/qwen2.5-1.5b-instruct.gguf .venv/bin/python experiments/e6_live_llama_server_lora.py
 ```
 
-Status: v0.1 core compiler (including asymmetric `INT4`/`INT8`/`F16` factor packing and `weft-slab/v0.1` binary containers), GGUF v3 F16 LoRA codec, five-layer binding, anti-Goodhart anchor harness, 37 unit and regression tests, and Experiments E1 to E5 are implemented and verified locally. Real 1.7B to 27B instruct-model benchmarks remain planned for Milestone 3. Claims carry explicit labels (`verified`, `source claim`, or `proposed`).
+Status: v0.1 core compiler (with asymmetric `INT4`/`INT8`/`F16` packing and `weft-slab/v0.1` containers), `llama.cpp`-verified GGUF v3 F16 LoRA codec, five-layer binding, anti-Goodhart anchor harness, 39 tests, and Experiments E1 to E6 are verified locally.
+
+Experiment E6 verifies simultaneous multi-LoRA serving and `0.99 ms` bit-exact rollback inside live `llama-server` on `Qwen2.5-1.5B-Instruct`. Full SOP behavioral benchmarks on 1.7B to 27B instruct checkpoints remain Milestone 3. Claims carry explicit labels (`verified`, `source claim`, or `proposed`).
 
 ## License
 
