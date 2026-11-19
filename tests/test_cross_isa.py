@@ -254,6 +254,28 @@ class TestCrossISABetaEdit(unittest.TestCase):
         b_ext = np.array([[1e-150], [1e150]], dtype=np.float64)
         self.assertEqual(float(ozaki_exact_matmul(a_ext, b_ext)[0, 0]), 2.0)
 
+        for big in (1e160, 1e165, 1e300):
+            inv = 1.0 / big
+            a_span = np.array([[big, inv]], dtype=np.float64)
+            b_span = np.array([[inv], [big]], dtype=np.float64)
+            self.assertEqual(float(ozaki_exact_matmul(a_span, b_span)[0, 0]), 2.0)
+
+        min_sub = np.nextafter(0.0, 1.0)
+        a_sub = np.array([[1e100, min_sub]], dtype=np.float64)
+        b_sub = np.array([[0.0], [1e300]], dtype=np.float64)
+        self.assertEqual(float(ozaki_exact_matmul(a_sub, b_sub)[0, 0]), float(min_sub * 1e300))
+
+        for mode in ("absolute", "relative_max", "relative_mean"):
+            u_huge, nd_huge = det_active_basis(
+                np.array([[1e200, 0.0], [0.0, 1e200]], dtype=np.float64),
+                d_in=2,
+                cutoff=0.5,
+                threshold_mode=mode,
+                min_nullspace_dim=1,
+            )
+            self.assertIsNotNone(u_huge)
+            self.assertEqual(nd_huge, 1)
+
         s = 2.0 ** -36
         a_mild = np.array([[1.0, s, 0.0]], dtype=np.float64)
         b_mild = np.array([[0.0], [s], [1.0]], dtype=np.float64)

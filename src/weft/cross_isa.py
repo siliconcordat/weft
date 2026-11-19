@@ -48,7 +48,6 @@ def _extract_ozaki_groups(
     """Decompose `mat` into exact non-overlapping 68-bit integer-limb tiers across arbitrary dynamic range."""
     rem = mat.copy()
     groups: list[tuple[np.ndarray, np.ndarray, list[np.ndarray]]] = []
-    total_bits = limb_bits * group_limbs
 
     while True:
         max_v = np.max(np.abs(rem), axis=1 if row_wise else 0)
@@ -69,11 +68,17 @@ def _extract_ozaki_groups(
             limbs.append(np.ascontiguousarray(limb, dtype=np.float64))
 
         groups.append((active, exp_i32, limbs))
-        if not np.any(r_cur != 0.0):
+        sub_rem = sub.copy()
+        for idx_l, limb in enumerate(limbs):
+            shift_back = (
+                (exp_i32 - (idx_l + 1) * limb_bits)[:, None]
+                if row_wise
+                else (exp_i32 - (idx_l + 1) * limb_bits)[None, :]
+            )
+            sub_rem = np.subtract(sub_rem, np.ldexp(limb, shift_back))
+        if not np.any(sub_rem != 0.0):
             break
 
-        shift_out = (exp_i32 - total_bits)[:, None] if row_wise else (exp_i32 - total_bits)[None, :]
-        sub_rem = np.ldexp(r_cur, shift_out)
         if row_wise:
             rem[active, :] = sub_rem
         else:
@@ -731,6 +736,52 @@ def _resolve_cutoff(
     return eps
 
 
+def _count_active_singular_values(
+    s_k: np.ndarray,
+    *,
+    d_in: int,
+    n0: int,
+    cutoff: float,
+    threshold_mode: ThresholdMode,
+) -> Optional[int]:
+    """Count `s_k^2 >= eff_cutoff` without overflowing `s_k * s_k` when `||K0|| >= 1e154`."""
+    if s_k.size == 0:
+        return None
+    s0 = float(s_k[0])
+    if s0 <= 1e150:
+        eigvals_desc = np.multiply(s_k, s_k)
+        eff_cutoff = _resolve_cutoff(
+            eigvals_desc, d_in=d_in, eps=cutoff, threshold_mode=threshold_mode
+        )
+        if float(eigvals_desc[0]) < eff_cutoff:
+            return None
+        if eff_cutoff <= 0.0:
+            pos_floor = s0 * float(max(d_in, n0)) * 2.220446049250313e-16
+            return int(np.sum(s_k > pos_floor))
+        return int(np.sum(eigvals_desc >= eff_cutoff))
+
+    _, exp_s0 = math.frexp(s0)
+    s_scaled = np.ldexp(s_k, -exp_s0)
+    eig_scaled = np.multiply(s_scaled, s_scaled)
+    if threshold_mode == "absolute":
+        if cutoff <= 0.0:
+            pos_floor = s0 * float(max(d_in, n0)) * 2.220446049250313e-16
+            return int(np.sum(s_k > pos_floor))
+        sqrt_cut = math.sqrt(cutoff)
+        if s0 < sqrt_cut:
+            return None
+        return int(np.sum(s_k >= sqrt_cut))
+    eff_scaled = _resolve_cutoff(
+        eig_scaled, d_in=d_in, eps=cutoff, threshold_mode=threshold_mode
+    )
+    if float(eig_scaled[0]) < eff_scaled:
+        return None
+    if eff_scaled <= 0.0:
+        pos_floor = s0 * float(max(d_in, n0)) * 2.220446049250313e-16
+        return int(np.sum(s_k > pos_floor))
+    return int(np.sum(eig_scaled >= eff_scaled))
+
+
 def det_active_basis(
     k0_scaled: np.ndarray,
     *,
@@ -746,25 +797,18 @@ def det_active_basis(
         return None, d_in
 
     frob_k0 = _safe_vec_norm(k0.reshape(-1))
-    frob_sq_k0 = frob_k0 * frob_k0
-    if threshold_mode == "absolute" and frob_sq_k0 < cutoff:
+    if threshold_mode == "absolute" and cutoff > 0.0 and frob_k0 < math.sqrt(cutoff):
         return None, d_in
 
+    max_active = max(0, d_in - min_nullspace_dim)
     if n0 <= d_in:
         q_k, r_k = det_householder_qr(k0)
         u_r, s_k, _ = det_jacobi_svd(r_k)
-        eigvals_desc = np.multiply(s_k, s_k)
-        eff_cutoff = _resolve_cutoff(
-            eigvals_desc, d_in=d_in, eps=cutoff, threshold_mode=threshold_mode
+        n_above = _count_active_singular_values(
+            s_k, d_in=d_in, n0=n0, cutoff=cutoff, threshold_mode=threshold_mode
         )
-        if float(eigvals_desc[0]) < eff_cutoff:
+        if n_above is None:
             return None, d_in
-        max_active = max(0, d_in - min_nullspace_dim)
-        if eff_cutoff <= 0.0:
-            pos_floor = float(s_k[0]) * float(max(d_in, n0)) * 2.220446049250313e-16
-            n_above = int(np.sum(s_k > pos_floor))
-        else:
-            n_above = int(np.sum(eigvals_desc >= eff_cutoff))
         n_active = min(n_above, max_active)
         if n_active == 0:
             return None, d_in
@@ -772,18 +816,11 @@ def det_active_basis(
     else:
         q_k, r_k = det_householder_qr(k0.T)
         _, s_k, vh_r = det_jacobi_svd(r_k)
-        eigvals_desc = np.multiply(s_k, s_k)
-        eff_cutoff = _resolve_cutoff(
-            eigvals_desc, d_in=d_in, eps=cutoff, threshold_mode=threshold_mode
+        n_above = _count_active_singular_values(
+            s_k, d_in=d_in, n0=n0, cutoff=cutoff, threshold_mode=threshold_mode
         )
-        if float(eigvals_desc[0]) < eff_cutoff:
+        if n_above is None:
             return None, d_in
-        max_active = max(0, d_in - min_nullspace_dim)
-        if eff_cutoff <= 0.0:
-            pos_floor = float(s_k[0]) * float(max(d_in, n0)) * 2.220446049250313e-16
-            n_above = int(np.sum(s_k > pos_floor))
-        else:
-            n_above = int(np.sum(eigvals_desc >= eff_cutoff))
         n_active = min(n_above, max_active)
         if n_active == 0:
             return None, d_in
