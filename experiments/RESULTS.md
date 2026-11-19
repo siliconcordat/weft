@@ -290,3 +290,20 @@ Key findings:
 - Right-singular scalar projection (`arm1`) exceeds `1.0` (`100%` capped) because sibling `B_other` columns sit orthogonal to `B_solo`, yet `0.2 * corpus` and `1.0 * formal-verification` collapse live `weft-eido` `step0` retention to `19.4%` and `0.0%`.
 - Sequential `commit_patch` (`arm2`) depends on compilation order (`Frobenius` diff `1.4489` when pack order reverses): `formal-verification` committed after `weft-eido` avoids `weft-eido` (`83.6%`), while `corpus` committed before `weft-eido` still overwrites it (`24.2%`).
 - Four-layer symmetric `TangentBetaEdit` (`arm4`) enforces trace-balanced bidirectional sibling preservation and worst-case per-state radial `eta` caps, raising `[0.2, 1.0, 0.0]` `step0` retention to `99.86%` and `[0.0, 1.0, 1.0]` retention to `96.41%`, cutting cross-talk `446x` (`0.8578 -> 0.0019`), cutting cumulative radial shrinkage `19.1x` vs `arm1` and `2.20x` vs single-layer `arm3`, retaining `24/24` anchors, and passing 0-byte re-derivation, reversed compile-order parity (`true`), 6-permutation load-order invariance (`2.8e-15`), and `O(1)` rollback (`0.0`).
+
+### Part C: Live `llama-server 0.5.0` verification on `Qwen3.5-4B-Q8_0` (`blk.28..31`, rank 8)
+
+Scope (`verified` locally in `experiments/e8_qwen35_4b_live_tc1_receipt.json` on `Qwen3.5-4B-Q8_0.gguf` inside `llama-server` `0.5.0`, `temperature = 0.0`, `top_p = 1.0`, `seed = 42`, `cache_prompt = False`, `POST /slots/0?action=erase`, `12/12` layer factor pairs passing CPU `float64` 0-byte re-derivation and reversed pack-order parity):
+
+| Live `Qwen3.5-4B-Q8_0` Check | Single-Layer `blk.31` | 4-Layer `TangentBetaEdit` (`blk.28..31`) |
+| --- | --- | --- |
+| Simultaneous 48-anchor CPU `float64` `up_proj` leak | `18.557115` | `0.000630` (`29,456x` lower) |
+| `formal-verification` per-layer radial shrinkage `sum s` | `0.00268025` | `0.00031224` (`8.58x` lower) |
+| Live `corpus` `T-C1` `[1.0, 0.0, 0.0]` `step0` retention | `100.00%` (`0.0` drift) | `100.00%` (`0.0` drift) |
+| Live `weft-eido` `T-C1` `[0.2, 1.0, 0.0]` `step0` retention | `0.00%` (`0.061073` vs `0.001922`, `31.8x` drift) | `90.73%` (`0.006248` vs `0.067369`, `342x` lower ratio) |
+| Live `formal-verification` `T-C1` `[0.0, 0.0, 1.0]` | `100.00%` (`</think>` destabilized into CoT loop) | `100.00%` (clean `</think>` + `theorem add_z` preserved) |
+| Minimum triple-stack live `step0` retention | `0.00%` | `90.73%` (`>= 90.0%` without subspace fallback) |
+| Live simultaneous `[1.0, 1.0, 1.0]` 24-anchor top-1 | `20/24` (max shift `0.685291`) | `24/24` (max shift `0.012581`, `54.5x` lower) |
+| Live `T-C4` reversed `--lora-scaled` order / rollback | `16/16` tokens / `0.0` | `16/16` tokens (`4.62e-4` F16 diff) / `0.0` |
+
+Live mechanism confirmation: under `enable_thinking: false`, single-layer `blk.31` radial base-logit shrinkage (`s = 0.00268`, `c = +0.01088`) attenuates `</think>` and knocks greedy decoding into `Thinking Process: 1. **Analyze the Request:**`. Splitting across `blk.28..31` (`8.58x` lower per-layer radial shrinkage) preserves clean `</think>` closure and direct Lean 4 theorem output across solo, triple, and simultaneous `[0.0, 1.0, 1.0]` runs.
