@@ -1,4 +1,4 @@
-"""Regression tests verifying the core invariants of Experiments E1 through E6."""
+"""Regression tests verifying the core invariants of Experiments E1 through E7."""
 
 from __future__ import annotations
 
@@ -18,6 +18,7 @@ from experiments.e3_real_checkpoint_smoke import run_experiment as run_e3
 from experiments.e4_asymmetric_quant_packing import run_experiment as run_e4
 from experiments.e5_noise_k0_scaling_and_readout import run_experiment as run_e5
 from experiments.e6_live_llama_server_lora import run_experiment as run_e6
+from experiments.e7_latent_lattice_mde import run_experiment as run_e7
 
 
 def test_e1_marchenko_pastur_and_zone_routing_invariants() -> None:
@@ -174,3 +175,45 @@ def test_e6_env_gate_skips_offline_and_verifies_when_enabled(
     assert ver["cancellation_max_logprob_diff"] < 1e-5
     assert ver["rollback_matches_pure_base_bit_exact"] is True
     assert ver["rollback_max_logprob_diff"] == 0.0
+
+
+def test_e7_latent_lattice_composition_rollback_and_asymmetric_cond() -> None:
+    res = run_e7()
+
+    # Part A: unrouted horizontal fails K0 & mixed; zone-routed horizontal & coupled preserve K0=0.0 drift
+    pa = res["part_a_composition"]
+    assert pa["l0_cartridge_zero_byte_rederivation"] is True
+    arms = pa["arms"]
+    assert arms["arm2_horizontal_cartridges_unrouted"]["k0_top1_retained"] < 12
+    assert arms["arm2_horizontal_cartridges_unrouted"]["mixed_formal_margin_gain"] < 0.0
+    assert arms["arm3_horizontal_cartridges_zone_routed"]["k0_top1_retained"] == 24
+    assert arms["arm3_horizontal_cartridges_zone_routed"]["k0_mean_max_logit_drift"] == 0.0
+    assert arms["arm3_horizontal_cartridges_zone_routed"]["mixed_formal_pass_rate"] == 1.0
+    assert arms["arm4_coupled_vertical_plus_horizontal_routed"]["k0_mean_max_logit_drift"] == 0.0
+    assert (
+        arms["arm4_coupled_vertical_plus_horizontal_routed"]["mixed_formal_margin_gain"]
+        > arms["arm3_horizontal_cartridges_zone_routed"]["mixed_formal_margin_gain"]
+    )
+
+    # Part B: scale-zero only AND KV-flush-only both leave huge post-revocation KV-write poisoning;
+    # only atomic KV + horizontal-lattice restore hits exact 0.0 diff
+    pb = res["part_b_kv_write_contamination_and_rollback"]
+    assert pb["strategy1_scale_zero_only"]["max_new_kv_write_drift_t3_t5"] > 10.0
+    assert pb["strategy2_kv_flush_only_lattice_poisoned"]["max_new_kv_write_drift_t3_t5"] > 10.0
+    assert pb["strategy2_kv_flush_only_lattice_poisoned"]["max_abs_logit_drift_t3_t5"] > 1.0
+    assert pb["strategy3_atomic_kv_plus_lattice_restore"]["max_abs_logit_drift_t3_t5"] == 0.0
+    assert pb["strategy3_atomic_kv_plus_lattice_restore"]["max_new_kv_write_drift_t3_t5"] == 0.0
+    assert pb["strategy3_atomic_kv_plus_lattice_restore"]["max_horiz_latent_drift_t3_t5"] == 0.0
+
+    # Part C: 0-byte re-derivation + Asymmetric Factor Leakage Theorem on Lattice conditioning
+    pc = res["part_c_lattice_conditioning_asymmetric_quant"]
+    for reg in pc["disjoint_bank_regimes"].values():
+        assert reg["cert_ok"] is True
+        assert reg["zero_byte_rederivation"] is True
+        assert reg["r0_base_leakage_fro"] == 0.0
+    hl = pc["shared_subspace_headline"]
+    assert hl["int4_int4_vs_int4_int8_ratio"] > 10.0
+    assert hl["int8_int4_vs_int4_int8_ratio"] > 10.0
+    assert hl["int4_int8_vs_int8_int8_ratio"] < 1.05
+    assert hl["int4_int8_byte_savings_vs_int8_int8_pct"] > 30.0
+    assert hl["int4_int8_byte_savings_vs_f16_f16_pct"] > 60.0

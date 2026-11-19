@@ -36,7 +36,7 @@ Weft enforces five hard vetoes inherited from Model Domain Expansion research:
 
 - [ARCHITECTURE.md](ARCHITECTURE.md): Two-class adapter policy, three-pack composition, verification primitive, and hardware layout.
 - [PLAN.md](PLAN.md): Phased build milestones, test suite, runnable experiments, and kill criteria.
-- [experiments/RESULTS.md](experiments/RESULTS.md): Verbatim measured outputs from Experiments E1 to E6, including failure boundaries and live `llama-server` results.
+- [experiments/RESULTS.md](experiments/RESULTS.md): Verbatim measured outputs from Experiments E1 to E7, including failure boundaries, live `llama-server` results, and Latent Lattice MDE probes.
 
 ## Quickstart
 
@@ -51,11 +51,12 @@ python3 -m venv .venv
 .venv/bin/python experiments/e5_noise_k0_scaling_and_readout.py
 # Opt-in live 1.5B llama-server multi-LoRA check:
 WEFT_LIVE_BASE_GGUF=/path/to/qwen2.5-1.5b-instruct.gguf .venv/bin/python experiments/e6_live_llama_server_lora.py
+.venv/bin/python experiments/e7_latent_lattice_mde.py
 ```
 
-Status: v0.1 core compiler (with asymmetric `INT4`/`INT8`/`F16` packing and `weft-slab/v0.1` containers), `llama.cpp`-verified GGUF v3 F16 LoRA codec, five-layer binding, anti-Goodhart anchor harness, 39 tests, and Experiments E1 to E6 are verified locally.
+Status: v0.1 core compiler (with asymmetric `INT4`/`INT8`/`F16` packing and `weft-slab/v0.1` containers), `llama.cpp`-verified GGUF v3 F16 LoRA codec, five-layer binding, anti-Goodhart anchor harness, 40 tests, and Experiments E1 to E7 are verified locally.
 
-Experiment E6 verifies simultaneous multi-LoRA serving and `0.99 ms` bit-exact rollback inside live `llama-server` on `Qwen2.5-1.5B-Instruct`. Full SOP behavioral benchmarks on 1.7B to 27B instruct checkpoints remain Milestone 3. Claims carry explicit labels (`verified`, `source claim`, or `proposed`).
+Experiment E6 verifies simultaneous multi-LoRA serving and `0.99 ms` bit-exact rollback inside live `llama-server` on `Qwen2.5-1.5B-Instruct`, and Experiment E7 verifies Latent Lattice capability banks, KV-write contamination rollback, and asymmetric conditioning. Full SOP behavioral benchmarks on 1.7B to 27B instruct checkpoints remain Milestone 3. Claims carry explicit labels (`verified`, `source claim`, or `proposed`).
 
 ## License
 

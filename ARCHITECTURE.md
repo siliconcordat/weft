@@ -45,6 +45,8 @@ Weft combines three defenses to stop shared-token collapse and cross-layer drift
 - **History-aware covariance accumulation (BetaEdit):** Each sequential pack `t` compiles inside the low-eigenvalue subspace of `C^(t) = lambda_1 * K0 @ K0.T + sum_{i<t} K_i @ K_i.T`. An exact `m x m` symmetric positive-definite Cholesky reduction avoids non-symmetric full-width inversions.
 - **Register-scoped preservation keys (`y = 0`):** Compiling the prose pack places code-block, formal-proof, and UI-module activations into the preservation set with zero target shift. The prose adapter learns near-zero response on non-prose hidden states.
 - **Dynamic zone-routed scale gating:** Layer 5 syntax zones (`prose`, `code`, `formal_proof`, `ui_module`) let the Layer 4 harness toggle per-adapter scale vectors (`scale_i in {0.0, 1.0}`) at `O(1)` cost without reloading weights. Explicit rule conflicts (such as static print HTML versus reactive live UI) require an explicit Plane 1 precedence flag rather than silent blending.
+- **Horizontal Latent Lattice banks (`arXiv:2611.21608`):** On models with per-layer horizontal recurrent streams `r_t^l` conditioning Q/K/V writes, MLPs, and decoding, Weft partitions `r_t^l` into capability banks gated by Layer 5 zone masks and deterministic CPU `float64` `L_0` cartridges.
+- **Atomic multi-bank rollback:** Because poisoned horizontal latents re-contaminate future KV writes even after a KV-only flush (verified in E7 Part B), `O(1)` rollback must atomically restore both `kv_cache` and `lattice_horizontal_streams` (matching Layer 3 `warp`'s fail-closed `ERR_LATTICE_FLUSH_FAILED` contract).
 
 ## Five-layer binding and integer certificates
 

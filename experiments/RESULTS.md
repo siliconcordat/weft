@@ -15,6 +15,7 @@ python3 -m venv .venv
 .venv/bin/python experiments/e5_noise_k0_scaling_and_readout.py
 # Opt-in live 1.5B llama-server test (supply any local Qwen2.5-1.5B GGUF path):
 WEFT_LIVE_BASE_GGUF=/path/to/qwen2.5-1.5b-instruct.gguf .venv/bin/python experiments/e6_live_llama_server_lora.py
+.venv/bin/python experiments/e7_latent_lattice_mde.py
 ```
 
 ## E1: Shared-token null-space collapse vs register-scoped composition
@@ -208,3 +209,51 @@ Scope (`verified` on real locally cached `Qwen2.5-1.5B-Instruct` GGUF inside com
 Two real `llama-server` `0.5.0` runtime findings (captured in `build_llama_server_lora_flags()`): passing repeated `--lora` flags with `--lora-init-without-apply` still initializes adapters at `scale = 1.0`, so fail-closed zero-init requires comma-separated `--lora-scaled <path>:0.0,...`. In addition, `POST /slots/0?action=erase` returns HTTP 501 unless `--slot-save-path` is configured.
 
 Honest boundary on E6: E6 proves real `llama.cpp` C++ GGUF v3 multi-LoRA loading, non-square `ggml` factor layout, simultaneous additive composition, algebraic cancellation, and sub-millisecond bit-exact rollback on `Qwen2.5-1.5B-Instruct`. The two adapters in E6 use seeded synthetic residuals to isolate linear-algebra and runtime mechanics rather than measuring SOP writing compliance, which remains Milestone 3.
+
+## E7: Latent Lattice Language Models (`arXiv:2611.21608`) x Weft MDE
+
+Scope (`verified` on a deterministic CPU `float64` 4-layer Latent Lattice Transformer implementing Duggal et al., `arXiv:2611.21608v1` Sec. 3.2.1 to 3.2.2 and App. A.2.1: early layer `0`, Lattice layers `1` and `2`, late layer `3`, `d_model = 64`, `d_ff = 128`, `d_r = 48` split into 4 width-12 capability banks `[base_k0, prose, ui, formal]`, exact Mamba-style affine horizontal recurrence, FiLM Q/K/V modulation writing into KV cache, SwiGLU MLP modulation, and top-Lattice decoding modulation).
+
+### Part A: Horizontal Lattice cartridges vs vertical `BetaEdit` vs coupled composition
+
+Three shared-carrier domains (75 percent shared carrier energy, opposing `prose` vs `formal` target tokens, plus 24 unseen `K0` sequences and 16 mixed `prose -> formal` switch prompts). `L_0` cartridge 0-byte re-derivation passed (`true`):
+
+| Composition Arm | `K0` Top-1 Retained | `K0` Mean Max Drift | Pure Pass (`P / U / F`) | Pure Margins (`P / U / F`) | Mixed Formal Switch |
+| --- | --- | --- | --- | --- | --- |
+| `arm1_vertical_betaedit_simultaneous` | 19/24 | 1.388620 | `56% / 50% / 56%` | `+0.35 / +0.01 / +1.12` | `+0.0619` (50.0%) |
+| `arm1b_vertical_betaedit_zone_routed` | 24/24 | 0.000000 | `56% / 50% / 63%` | `+0.66 / -0.02 / +0.80` | `+0.6330` (62.5%) |
+| `arm2_horizontal_cartridges_unrouted` | 5/24 | 4.525512 | `50% / 100% / 50%` | `+0.22 / +7.94 / -0.17` | `-0.5272` (18.8%) |
+| `arm3_horizontal_cartridges_zone_routed` | 24/24 | 0.000000 | `100% / 100% / 100%` | `+9.90 / +10.67 / +8.62` | `+8.4463` (100.0%) |
+| `arm4_coupled_vertical_plus_horizontal_routed` | 24/24 | 0.000000 | `100% / 100% / 100%` | `+10.33 / +10.32 / +9.36` | `+9.0875` (100.0%) |
+
+Honest failure mode: unrouted persistent horizontal banks (`arm2`) collapse `K0` (`5/24`, drift `4.53`) and mixed-zone formal output (`-0.527`) because opposing horizontal states collide across every token. Adding L5 zone-routed channel masking (`arm3`) restores exact `0.0` `K0` drift (`24/24`) and 100 percent pass across all domains, while coupling vertical `BetaEdit` + routed horizontal cartridges (`arm4`) lifts mixed-zone formal margin further (`+8.45` to `+9.09`) with zero `K0` drift.
+
+### Part B: KV-write contamination and atomic multi-bank rollback (`t = 3..5` after revocation)
+
+An adversarial adapter plus horizontal latent injection runs at steps `t = 0..2`, then revokes at `t = 3`. All metrics measure steps `t = 3..5` against the clean Base `W0` trajectory:
+
+| Rollback Strategy after Revocation at `t = 3` | Max Abs Logit Drift (`t = 3..5`) | Max NEW KV-Write Drift (`t = 3..5`) | Max Horizontal Latent Drift (`t = 3..5`) |
+| --- | --- | --- | --- |
+| `strategy1_scale_zero_only` (adapter scale = 0 only) | 6.165156 | 31.812266 | 11.149887 |
+| `strategy2_kv_flush_only_lattice_poisoned` (KV flushed, lattice kept) | 8.129843 | 30.260386 | 11.106646 |
+| `strategy3_atomic_kv_plus_lattice_restore` (KV + lattice atomic) | 0.000000 | 0.000000 | 0.000000 |
+
+Takeaway: flushing only the KV cache (`strategy2`) fails completely on Latent Lattice architectures. The surviving poisoned horizontal latent `r_2^l` immediately re-poisons newly written `(k_t^l, v_t^l)` pairs (`30.26` norm drift) and downstream logits (`8.13` max drift). Exact `0.0` restoration requires atomic multi-bank restore of both `kv_cache` and `lattice_horizontal_streams`.
+
+### Part C: Hard Veto 1 and asymmetric `(int4 / int8)` quantization on Lattice conditioning (`128 x 48`)
+
+Compiling the wide-output horizontal-to-MLP conditioning projection `W_bgate` (`d_ff = 128`, `d_r = 48`, rank 4) passes `cert_ok = true` and 0-byte re-derivation across all 8 precision regimes. Under disjoint capability banks, symmetric zero-centered quantization keeps `0.0` leakage across every precision. Under shared 48-dim horizontal carriers (`A_c R_0 = 0` via BetaEdit):
+
+| Shared-Subspace Conditioning Regime (`B / A`) | Bytes | `R_0` Base Leakage | Cert Leakage Scaled | Savings vs `f16/f16` |
+| --- | --- | --- | --- | --- |
+| `f16 / f16` | 1,408 | 0.001334 | 29,850 | 0.0% |
+| `bf16 / bf16` | 1,408 | 0.011524 | 2,228,082 | 0.0% |
+| `int8 / int8` | 736 | 0.040783 | 27,904,899 | 47.7% |
+| `int4 / f16` | 656 | 0.001338 | 30,041 | 53.4% |
+| `int4 / int8` | 480 | 0.040734 | 27,837,481 | 65.9% |
+| `int8 / int4` (control) | 640 | 0.584591 | 5,733,549,567 | 54.5% |
+| `int4 / int4` | 384 | 0.587362 | 5,788,034,681 | 72.7% |
+
+`int4 / int8` cuts shared-subspace horizontal-to-vertical leakage 14.42x vs `int4 / int4` and 14.35x vs reversed control `int8 / int4` (matching `int8 / int8` at ratio `0.999`) while cutting bytes 34.8 percent vs `int8 / int8` and 65.9 percent vs `f16 / f16`. `int4 / f16` cuts bytes 53.4 percent vs `bf16 / bf16` with 8.6x lower leakage.
+
+Honest boundary on E7: E7 uses a synthetic 4-layer CPU `float64` Latent Lattice Transformer to isolate exact recurrence, KV-write coupling, rollback, and quantization physics. Pretrained 406M+ LLLM checkpoints are not yet publicly released, so language-modeling perplexity evaluation on trained Lattice weights awaits open checkpoints.
