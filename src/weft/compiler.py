@@ -15,6 +15,14 @@ from typing import Literal, Optional, Sequence
 import numpy as np
 
 from .certificate import FixedRadixCertificate, GatePolicy, build_certificate
+from .cross_isa import (
+    apply_p_null,
+    det_active_basis,
+    det_build_certificate_values,
+    ieee754_binary_sum,
+    ozaki_exact_matmul,
+    solve_betaedit_with_basis,
+)
 from .quant import SUPPORTED_QUANT_DTYPES, quantize_array, sha256_factor_pair
 
 ThresholdMode = Literal["absolute", "relative_max", "relative_mean"]
@@ -37,6 +45,7 @@ class BetaEditConfig:
     quant_dtype: QuantDtype = "bf16"
     b_quant_dtype: Optional[QuantDtype] = None
     a_quant_dtype: Optional[QuantDtype] = None
+    cross_isa_deterministic: bool = False
 
     @property
     def effective_b_dtype(self) -> QuantDtype:
@@ -107,6 +116,10 @@ class BetaEditNullspaceProjector:
         self._slot_generation = np.zeros(config.max_slots, dtype=np.int64)
         self._slot_names: dict[int, str] = {}
         self._slot_key_grams: dict[int, np.ndarray] = {}
+        self._slot_keys_det: dict[int, np.ndarray] = {}
+        self._det_k0_scaled = np.zeros((config.d_in, 0), dtype=np.float64)
+        self._det_u_active: Optional[np.ndarray] = None
+        self._det_nullspace_dim: int = config.d_in
         self._safety_directions: list[tuple[np.ndarray, np.ndarray]] = []
 
         self._projector_epoch = 0
@@ -127,6 +140,8 @@ class BetaEditNullspaceProjector:
 
     @property
     def nullspace_dim(self) -> int:
+        if self.config.cross_isa_deterministic:
+            return int(self._det_nullspace_dim)
         return int(self._u_small.shape[1])
 
     @property
@@ -139,7 +154,17 @@ class BetaEditNullspaceProjector:
 
     @property
     def projection_matrix(self) -> np.ndarray:
+        if self.config.cross_isa_deterministic:
+            eye = np.eye(self.config.d_in, dtype=np.float64)
+            return apply_p_null(self._det_u_active, eye)
         return self._u_small @ self._u_small.T
+
+    def _det_cov_factors(self) -> np.ndarray:
+        parts = [self._det_k0_scaled] + [self._slot_keys_det[k] for k in sorted(self._slot_keys_det)]
+        non_empty = [p for p in parts if p.shape[1] > 0]
+        if not non_empty:
+            return np.zeros((self.config.d_in, 0), dtype=np.float64)
+        return np.concatenate(non_empty, axis=1)
 
     def initialize_anchor_covariance(
         self, k0_or_gram: np.ndarray, *, is_gram: bool = False
@@ -148,6 +173,14 @@ class BetaEditNullspaceProjector:
         mat = np.ascontiguousarray(k0_or_gram, dtype=np.float64)
         if not np.all(np.isfinite(mat)):
             raise ValueError("Anchor keys or Gram matrix must be finite.")
+        if self.config.cross_isa_deterministic:
+            if is_gram:
+                raise ValueError("cross_isa_deterministic requires anchor key matrix (is_gram=False).")
+            if mat.ndim != 2 or mat.shape[0] != self.config.d_in:
+                raise ValueError(f"Expected ({self.config.d_in}, n_0) anchor key matrix.")
+            self._det_k0_scaled = np.multiply(math.sqrt(self.config.lambda_leakage), mat)
+            return self.refresh_projector()
+
         if is_gram:
             if mat.shape != (self.config.d_in, self.config.d_in):
                 raise ValueError(f"Expected ({self.config.d_in}, {self.config.d_in}) Gram matrix.")
@@ -174,6 +207,15 @@ class BetaEditNullspaceProjector:
             or b64.shape[1] != a64.shape[0]
         ):
             raise ValueError("Incompatible safety direction factor shapes.")
+        if self.config.cross_isa_deterministic:
+            bt_b = ozaki_exact_matmul(b64.T, b64)
+            aa_t = ozaki_exact_matmul(a64, a64.T)
+            norm_sq = float(ieee754_binary_sum(np.multiply(bt_b, aa_t).reshape(-1)))
+            if norm_sq <= 0.0:
+                raise ValueError("Safety direction must have positive norm.")
+            scale = 1.0 / math.sqrt(math.sqrt(norm_sq))
+            self._safety_directions.append((np.multiply(b64, scale), np.multiply(a64, scale)))
+            return
         norm_sq = float(np.sum((b64.T @ b64) * (a64 @ a64.T)))
         if norm_sq <= 0.0:
             raise ValueError("Safety direction must have positive norm.")
@@ -182,6 +224,19 @@ class BetaEditNullspaceProjector:
 
     def refresh_projector(self) -> int:
         """Recompute pseudo-nullspace basis U_small from symmetric C^(t)."""
+        if self.config.cross_isa_deterministic:
+            cov_f = self._det_cov_factors()
+            self._det_u_active, self._det_nullspace_dim = det_active_basis(
+                cov_f,
+                d_in=self.config.d_in,
+                cutoff=self.config.nullspace_threshold,
+                threshold_mode=self.config.threshold_mode,
+                min_nullspace_dim=self.config.min_nullspace_dim,
+            )
+            self._projector_epoch += 1
+            self._commits_since_refresh = 0
+            return int(self._det_nullspace_dim)
+
         sym = 0.5 * (self._cov_accum + self._cov_accum.T)
         eigvals, eigvecs = np.linalg.eigh(sym)
         eigvals = np.maximum(eigvals, 0.0)
@@ -312,6 +367,60 @@ class BetaEditNullspaceProjector:
         if not (1 <= rank_cap <= self.config.max_rank):
             raise ValueError(f"rank must lie in [1, {self.config.max_rank}].")
 
+        eb = self.config.effective_b_dtype
+        ea = self.config.effective_a_dtype
+
+        if self.config.cross_isa_deterministic:
+            cov_f = self._det_cov_factors()
+            b64, a64, s_vals, trunc_err = solve_betaedit_with_basis(
+                u_active=self._det_u_active,
+                cov_factors=cov_f,
+                k_solve=k_solve,
+                r_solve=r_solve,
+                rank=rank_cap,
+                lambda_ridge=self.config.lambda_ridge,
+            )
+            b_bytes, b_q = quantize_array(b64, eb, axis=0)
+            a_bytes, a_q = quantize_array(a64, ea, axis=1)
+            digest = sha256_factor_pair(
+                b_bytes,
+                a_bytes,
+                (int(b_q.shape[0]), int(b_q.shape[1])),
+                (int(a_q.shape[0]), int(a_q.shape[1])),
+                self.config.quant_dtype,
+                b_dtype=eb,
+                a_dtype=ea,
+            )
+            fi, si, li, sfi = det_build_certificate_values(
+                b_q,
+                a_q,
+                cov_f,
+                radix_scale_exp2=self.config.radix_scale_exp2,
+                safety_directions=self._safety_directions,
+            )
+            cert = FixedRadixCertificate(
+                radix_scale_exp2=self.config.radix_scale_exp2,
+                frobenius_sq_scaled=fi,
+                spectral_norm_sq_scaled=si,
+                leakage_energy_scaled=li,
+                max_safety_dot_sq_scaled=sfi,
+                projector_epoch=self._projector_epoch,
+                factor_digest=digest,
+                quant_dtype=self.config.quant_label,
+            )
+            return StagedPatch(
+                factor_b=b_q,
+                factor_a=a_q,
+                b_bytes=b_bytes,
+                a_bytes=a_bytes,
+                singular_values=s_vals,
+                effective_rank=int(b_q.shape[1]),
+                truncation_rel_error=trunc_err,
+                factor_digest=digest,
+                certificate=cert,
+                slot_name=slot_name,
+            )
+
         # Exact block-triangular SPD subspace reduction:
         # Solve (lambda_2 I_m + U^T C^(t) U + U^T K K^T U) X = U^T K
         k_proj = self._u_small.T @ k_solve
@@ -332,8 +441,6 @@ class BetaEditNullspaceProjector:
         right64 = (self._u_small @ solved).T  # (u_total, d_in)
         b64, a64, s_vals, trunc_err = self.decompose_rank_r(r_solve, right64, rank_cap)
 
-        eb = self.config.effective_b_dtype
-        ea = self.config.effective_a_dtype
         # Per-rank-vector integer scales: axis=0 on B (d_out x r -> r scales),
         # axis=1 on A (r x d_in -> r scales) matches SVD factor geometry without d_out scale bloat.
         b_bytes, b_q = quantize_array(b64, eb, axis=0)
@@ -410,6 +517,13 @@ class BetaEditNullspaceProjector:
         self._slot_names[target] = patch.slot_name or f"slot_{target}"
 
         k64 = np.ascontiguousarray(keys, dtype=np.float64)
+        if self.config.cross_isa_deterministic:
+            self._slot_keys_det[target] = k64
+            self._commits_since_refresh += 1
+            self._total_commits += 1
+            if self._commits_since_refresh >= self.config.refresh_period:
+                self.refresh_projector()
+            return target
         gram = k64 @ k64.T
         self._cov_accum = self._cov_accum + gram
         k_proj = self._u_small.T @ k64
@@ -432,6 +546,8 @@ class BetaEditNullspaceProjector:
         self._arena_a[slot_id].fill(0.0)
         self._slot_generation[slot_id] += 1
         self._slot_names.pop(slot_id, None)
+        if revert_covariance:
+            self._slot_keys_det.pop(slot_id, None)
         gram = self._slot_key_grams.pop(slot_id, None)
         if revert_covariance and gram is not None:
             self._cov_accum = self._cov_accum - gram
@@ -447,6 +563,18 @@ class BetaEditNullspaceProjector:
     ) -> np.ndarray:
         """Compute (W0 + sum_i scale_i * B_i A_i) @ keys for columns of shape (d_in, u)."""
         k64 = np.ascontiguousarray(keys, dtype=np.float64)
+        if self.config.cross_isa_deterministic:
+            out = ozaki_exact_matmul(self._w0, k64)
+            active_idx = np.flatnonzero(self._slot_active)
+            for idx in active_idx:
+                s = 1.0 if slot_scales is None else float(slot_scales.get(int(idx), 0.0))
+                if s == 0.0:
+                    continue
+                r_eff = int(self._slot_ranks[idx])
+                ak = ozaki_exact_matmul(self._arena_a[idx, :r_eff, :], k64)
+                bak = ozaki_exact_matmul(self._arena_b[idx, :, :r_eff], ak)
+                out = np.add(out, np.multiply(s, bak))
+            return out
         out = self._w0 @ k64
         active_idx = np.flatnonzero(self._slot_active)
         for idx in active_idx:

@@ -19,6 +19,15 @@ from .binding import (
 )
 from .certificate import FixedRadixCertificate, GatePolicy, build_certificate
 from .compiler import BetaEditConfig, BetaEditNullspaceProjector, StagedPatch, verify_rederivation
+from .cross_isa import (
+    canonicalize_output_factors,
+    compile_betaedit_cross_isa,
+    det_cholesky_solve,
+    det_householder_qr,
+    det_jacobi_svd,
+    ieee754_binary_sum,
+    ozaki_exact_matmul,
+)
 from .gguf_lora import (
     GGUFLoraAdapter,
     build_llama_server_lora_flags,
@@ -63,12 +72,19 @@ __all__ = [
     "build_binding_manifest",
     "build_certificate",
     "build_llama_server_lora_flags",
+    "canonicalize_output_factors",
     "check_flake_stability",
+    "compile_betaedit_cross_isa",
     "dequantize_array",
     "dequantize_int4",
     "dequantize_int8",
+    "det_cholesky_solve",
+    "det_householder_qr",
+    "det_jacobi_svd",
     "evaluate_adapter_gate",
+    "ieee754_binary_sum",
     "lexicase_select",
+    "ozaki_exact_matmul",
     "quantize_bf16",
     "quantize_f16",
     "quantize_int4",
