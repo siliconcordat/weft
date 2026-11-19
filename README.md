@@ -36,8 +36,20 @@ Weft enforces five hard vetoes inherited from Model Domain Expansion research:
 
 - [ARCHITECTURE.md](ARCHITECTURE.md): Two-class adapter policy, three-pack composition, verification primitive, and hardware layout.
 - [PLAN.md](PLAN.md): Phased build milestones, test suite, runnable experiments, and kill criteria.
+- [experiments/RESULTS.md](experiments/RESULTS.md): Verbatim measured outputs from Experiments E1, E2, and E3, including failure boundaries.
 
-Status: Active v0.1 build. Code and runnable verification experiments land in `src/weft/`, `tests/`, and `experiments/`. Claims in this repository carry explicit labels (`verified`, `source claim`, or `proposed`).
+## Quickstart
+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install -e ".[dev]"
+.venv/bin/pytest -v
+.venv/bin/python experiments/e1_shared_token_composition.py
+.venv/bin/python experiments/e2_anti_goodhart_gate.py
+.venv/bin/python experiments/e3_real_checkpoint_smoke.py
+```
+
+Status: v0.1 core compiler, GGUF v3 F16 LoRA codec, five-layer binding, anti-Goodhart anchor harness, unit tests, and Experiments E1 to E3 are implemented and verified locally. Real 1.7B to 27B instruct-model benchmarks remain planned for Milestone 3. Claims carry explicit labels (`verified`, `source claim`, or `proposed`).
 
 ## License
 
