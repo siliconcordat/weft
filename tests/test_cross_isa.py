@@ -9,12 +9,15 @@ import numpy as np
 
 from weft.compiler import BetaEditConfig, BetaEditNullspaceProjector, verify_rederivation
 from weft.cross_isa import (
+    apply_p_null,
     canonicalize_output_factors,
     compile_betaedit_cross_isa,
+    det_active_basis,
     det_cholesky_solve,
     det_householder_qr,
     det_jacobi_svd,
     ozaki_exact_matmul,
+    solve_betaedit_with_basis,
 )
 
 
@@ -66,6 +69,12 @@ class TestCrossISABetaEdit(unittest.TestCase):
         )
         self.assertEqual(_sha(b1), _sha(b2))
         self.assertEqual(_sha(a1), _sha(a2))
+
+        b_neg0, _ = canonicalize_output_factors(
+            np.array([[-1.0, 0.0], [1.0, -0.0]], dtype=np.float64),
+            np.eye(2, dtype=np.float64),
+        )
+        self.assertFalse(bool(np.signbit(b_neg0[1, 1])))
 
     def test_projector_cross_isa_mode_matches_dense_and_rederives(self) -> None:
         rng = np.random.default_rng(101)
@@ -163,6 +172,97 @@ class TestCrossISABetaEdit(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             ozaki_exact_matmul(np.zeros((4, 5)), np.zeros((6, 3)))
+
+    def test_neon_a1_direct_pushthrough_avoids_cancellation(self) -> None:
+        rng = np.random.default_rng(42)
+        q_m, _ = np.linalg.qr(rng.standard_normal((32, 12)))
+        r_solve = rng.standard_normal((8, 4))
+        m_all = q_m * 1e8
+        lr = 1e-4
+        k0 = m_all[:, :8]
+        k_solve = m_all[:, 8:]
+        delta_exact = r_solve @ (k_solve / (1e16 + lr)).T
+        b_ci, a_ci, _, _ = solve_betaedit_with_basis(
+            u_active=None,
+            cov_factors=k0,
+            k_solve=k_solve,
+            r_solve=r_solve,
+            rank=4,
+            lambda_ridge=lr,
+        )
+        rel_err = float(np.linalg.norm((b_ci @ a_ci) - delta_exact) / np.linalg.norm(delta_exact))
+        self.assertLess(rel_err, 1e-13)
+
+    def test_neon_a2_rank_deficient_orthonormal_u_and_active_basis(self) -> None:
+        for mat in (
+            np.array([[0.0, 0.0], [1.0, 0.0]], dtype=np.float64),
+            np.array([[1.0, 1.0], [1.0, 1.0]], dtype=np.float64),
+            np.array([[1.0, 2.0, 3.0], [2.0, 4.0, 6.0], [3.0, 6.0, 9.0]], dtype=np.float64),
+            np.array([[1.0, 1.0, 1.0], [2.0, 2.0, 2.0]], dtype=np.float64),
+        ):
+            u, s, vh = det_jacobi_svd(mat)
+            self.assertLess(float(np.linalg.norm((u.T @ u) - np.eye(u.shape[1]))), 1e-14)
+            self.assertLess(float(np.linalg.norm((vh @ vh.T) - np.eye(vh.shape[0]))), 1e-14)
+            self.assertLess(float(np.linalg.norm((u @ np.diag(s) @ vh) - mat)), 1e-14)
+
+        k0_rank1 = np.array([[0.0, 1.0], [0.0, 1.0], [0.0, 0.0]], dtype=np.float64)
+        u_act, null_dim = det_active_basis(
+            k0_rank1, d_in=3, cutoff=0.0, threshold_mode="absolute", min_nullspace_dim=1
+        )
+        self.assertIsNotNone(u_act)
+        if u_act is None:
+            raise AssertionError("u_act must not be None")
+        self.assertEqual(null_dim, 2)
+        self.assertLess(float(np.linalg.norm((u_act.T @ u_act) - np.eye(u_act.shape[1]))), 1e-14)
+        p_null = apply_p_null(u_act, np.eye(3, dtype=np.float64))
+        self.assertLess(float(np.linalg.norm((p_null @ p_null) - p_null)), 1e-14)
+
+    def test_neon_a3_jacobi_scale_invariance_and_steep_convergence(self) -> None:
+        base = np.array([[3.0, 1.0], [1.0, 2.0]], dtype=np.float64)
+        for scale in (1e80, 1e-82):
+            u, s, _ = det_jacobi_svd(base * scale)
+            self.assertLess(float(np.linalg.norm((u.T @ u) - np.eye(2))), 1e-14)
+            self.assertGreater(float(s[0]), 0.0)
+
+        u_tau, _, vh_tau = det_jacobi_svd(np.array([[1e73, 1e-86], [0.0, 1e-73]], dtype=np.float64))
+        self.assertLess(float(np.linalg.norm((u_tau.T @ u_tau) - np.eye(2))), 1e-14)
+        self.assertLess(float(np.linalg.norm((vh_tau @ vh_tau.T) - np.eye(2))), 1e-14)
+
+        rng = np.random.default_rng(7)
+        q1, _ = np.linalg.qr(rng.standard_normal((64, 64)))
+        q2, _ = np.linalg.qr(rng.standard_normal((64, 64)))
+        sig = np.geomspace(1.0, 1e-8, 64)
+        sig[1] = sig[0] * (1.0 - 1e-12)
+        sig[3] = sig[2]
+        mat_c = q1 @ np.diag(sig) @ q2.T
+        u64, s64, vh64 = det_jacobi_svd(mat_c)
+        self.assertLess(float(np.linalg.norm((u64.T @ u64) - np.eye(64))), 1e-13)
+        self.assertLess(float(np.linalg.norm((u64 @ np.diag(s64) @ vh64) - mat_c) / np.linalg.norm(mat_c)), 1e-13)
+
+    def test_neon_a4_householder_qr_tiny_tail_and_subscale(self) -> None:
+        m_sub = np.array([[1.0, 0.0], [2.2e-162, 1.0]], dtype=np.float64)
+        q_s, r_s = det_householder_qr(m_sub)
+        self.assertTrue(bool(np.all(np.isfinite(q_s)) and np.all(np.isfinite(r_s))))
+        self.assertLess(float(np.linalg.norm((q_s @ r_s) - m_sub)), 1e-15)
+
+        m_tiny = np.array([[1e-170, 0.0], [1e-170, 1e-170]], dtype=np.float64)
+        q_t, r_t = det_householder_qr(m_tiny)
+        self.assertLess(float(np.linalg.norm(((q_t @ r_t) - m_tiny) * 1e170)), 1e-15)
+
+    def test_neon_a5_ozaki_disparate_scales_and_guards(self) -> None:
+        a_ext = np.array([[1e150, 1e-150]], dtype=np.float64)
+        b_ext = np.array([[1e-150], [1e150]], dtype=np.float64)
+        self.assertEqual(float(ozaki_exact_matmul(a_ext, b_ext)[0, 0]), 2.0)
+
+        s = 2.0 ** -36
+        a_mild = np.array([[1.0, s, 0.0]], dtype=np.float64)
+        b_mild = np.array([[0.0], [s], [1.0]], dtype=np.float64)
+        self.assertEqual(float(ozaki_exact_matmul(a_mild, b_mild)[0, 0]), 2.0 ** -72)
+
+        with self.assertRaises(ValueError):
+            ozaki_exact_matmul(np.array([[np.inf, 1.0]]), np.array([[1.0], [1.0]]))
+        with self.assertRaises(ValueError):
+            ozaki_exact_matmul(np.ones((1, 4)), np.ones((4, 1)), k_block=32768)
 
 
 if __name__ == "__main__":

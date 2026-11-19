@@ -38,49 +38,84 @@ def ieee754_binary_sum(arr: np.ndarray, axis: int = -1) -> np.ndarray:
     return np.ascontiguousarray(res, dtype=np.float64)
 
 
-def _ozaki_chunk(a: np.ndarray, b: np.ndarray, *, limb_bits: int = 17, n_limbs: int = 4) -> np.ndarray:
-    """Exact-integer limb matmul for inner dimension k <= 16384 (`k * 2^34 < 2^48 < 2^53`)."""
-    m, k = a.shape
-    _, n = b.shape
-    if k == 0 or m == 0 or n == 0:
-        return np.zeros((m, n), dtype=np.float64)
+def _extract_ozaki_groups(
+    mat: np.ndarray,
+    *,
+    row_wise: bool,
+    limb_bits: int = 17,
+    group_limbs: int = 4,
+) -> list[tuple[np.ndarray, np.ndarray, list[np.ndarray]]]:
+    """Decompose `mat` into exact non-overlapping 68-bit integer-limb tiers across arbitrary dynamic range."""
+    rem = mat.copy()
+    groups: list[tuple[np.ndarray, np.ndarray, list[np.ndarray]]] = []
+    total_bits = limb_bits * group_limbs
 
-    max_a = np.max(np.abs(a), axis=1)
-    _, exp_a = np.frexp(max_a)
-    exp_a = np.where(max_a > 0.0, exp_a, 0).astype(np.int32)
-    a_norm = np.ldexp(a, -exp_a[:, None])
+    while True:
+        max_v = np.max(np.abs(rem), axis=1 if row_wise else 0)
+        active = np.flatnonzero(max_v > 0.0)
+        if active.size == 0:
+            break
+        sub = rem[active, :] if row_wise else rem[:, active]
+        _, exp_v = np.frexp(max_v[active])
+        exp_i32 = exp_v.astype(np.int32)
+        shift_in = -exp_i32[:, None] if row_wise else -exp_i32[None, :]
+        r_cur = np.ldexp(sub, shift_in)
 
-    max_b = np.max(np.abs(b), axis=0)
-    _, exp_b = np.frexp(max_b)
-    exp_b = np.where(max_b > 0.0, exp_b, 0).astype(np.int32)
-    b_norm = np.ldexp(b, -exp_b[None, :])
+        limbs: list[np.ndarray] = []
+        for _ in range(group_limbs):
+            sc = np.ldexp(r_cur, limb_bits)
+            limb = np.trunc(sc)
+            r_cur = np.subtract(sc, limb)
+            limbs.append(np.ascontiguousarray(limb, dtype=np.float64))
 
-    a_limbs = []
-    rem_a = a_norm
-    for _ in range(n_limbs):
-        sc = np.ldexp(rem_a, limb_bits)
-        limb = np.trunc(sc)
-        rem_a = np.subtract(sc, limb)
-        a_limbs.append(np.ascontiguousarray(limb, dtype=np.float64))
+        groups.append((active, exp_i32, limbs))
+        if not np.any(r_cur != 0.0):
+            break
 
-    b_limbs = []
-    rem_b = b_norm
-    for _ in range(n_limbs):
-        sc = np.ldexp(rem_b, limb_bits)
-        limb = np.trunc(sc)
-        rem_b = np.subtract(sc, limb)
-        b_limbs.append(np.ascontiguousarray(limb, dtype=np.float64))
+        shift_out = (exp_i32 - total_bits)[:, None] if row_wise else (exp_i32 - total_bits)[None, :]
+        sub_rem = np.ldexp(r_cur, shift_out)
+        if row_wise:
+            rem[active, :] = sub_rem
+        else:
+            rem[:, active] = sub_rem
 
-    weights = [np.zeros((m, n), dtype=np.int64) for _ in range(n_limbs)]
-    for p in range(n_limbs):
-        for q in range(n_limbs - p):
-            prod_exact = a_limbs[p] @ b_limbs[q]
+    return groups
+
+
+def _eval_4x4_group_pair(
+    limbs_a: list[np.ndarray],
+    exp_a: np.ndarray,
+    limbs_b: list[np.ndarray],
+    exp_b: np.ndarray,
+    *,
+    limb_bits: int = 17,
+) -> np.ndarray:
+    """Evaluate all 16 exact-integer limb products `p, q in 0..3` for one `(group_a, group_b)` pair."""
+    m_sub = limbs_a[0].shape[0]
+    n_sub = limbs_b[0].shape[1]
+    weights = [np.zeros((m_sub, n_sub), dtype=np.int64) for _ in range(7)]
+    for p in range(4):
+        lp = limbs_a[p]
+        for q in range(4):
+            prod_exact = lp @ limbs_b[q]
             weights[p + q] += prod_exact.astype(np.int64)
 
     mask = (1 << limb_bits) - 1
-    w3 = weights[3]
-    c3 = w3 >> limb_bits
-    r3 = w3 & mask
+    t6 = weights[6]
+    c6 = t6 >> limb_bits
+    r6 = t6 & mask
+
+    t5 = weights[5] + c6
+    c5 = t5 >> limb_bits
+    r5 = t5 & mask
+
+    t4 = weights[4] + c5
+    c4 = t4 >> limb_bits
+    r4 = t4 & mask
+
+    t3 = weights[3] + c4
+    c3 = t3 >> limb_bits
+    r3 = t3 & mask
 
     t2 = weights[2] + c3
     c2 = t2 >> limb_bits
@@ -91,32 +126,80 @@ def _ozaki_chunk(a: np.ndarray, b: np.ndarray, *, limb_bits: int = 17, n_limbs: 
     r1 = t1 & mask
 
     t0 = weights[0] + c1
-    mid_int = (r1 << limb_bits) + r2
+    mid_int = (r1 << (2 * limb_bits)) + (r2 << limb_bits) + r3
+    lo_int = (r4 << (2 * limb_bits)) + (r5 << limb_bits) + r6
 
     hi = np.ldexp(t0.astype(np.float64), -2 * limb_bits)
-    mid = np.ldexp(mid_int.astype(np.float64), -4 * limb_bits)
-    lo = np.ldexp(r3.astype(np.float64), -5 * limb_bits)
+    mid = np.ldexp(mid_int.astype(np.float64), -5 * limb_bits)
+    lo = np.ldexp(lo_int.astype(np.float64), -8 * limb_bits)
     combined = np.add(hi, np.add(mid, lo))
-    out = np.ldexp(combined, exp_a[:, None] + exp_b[None, :])
-    zero_mask = (max_a[:, None] == 0.0) | (max_b[None, :] == 0.0)
-    out = np.where(zero_mask, 0.0, out)
-    return np.ascontiguousarray(out, dtype=np.float64)
+    return np.ldexp(combined, exp_a[:, None] + exp_b[None, :])
+
+
+def _two_sum_accumulate(acc: np.ndarray, err: np.ndarray, term: np.ndarray) -> None:
+    """Knuth error-free `two_sum` accumulation in place on `(acc, err)`."""
+    s = np.add(acc, term)
+    v = np.subtract(s, acc)
+    e = np.add(np.subtract(acc, np.subtract(s, v)), np.subtract(term, v))
+    acc[:] = s
+    err[:] = np.add(err, e)
+
+
+def _ozaki_chunk(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """Exact-integer adaptive multi-tier matmul for inner dimension `k <= 16384`."""
+    m, k = a.shape
+    _, n = b.shape
+    if k == 0 or m == 0 or n == 0:
+        return np.zeros((m, n), dtype=np.float64)
+
+    groups_a = _extract_ozaki_groups(a, row_wise=True)
+    groups_b = _extract_ozaki_groups(b, row_wise=False)
+    if not groups_a or not groups_b:
+        return np.zeros((m, n), dtype=np.float64)
+
+    if len(groups_a) == 1 and len(groups_b) == 1:
+        rows_a, exp_a, limbs_a = groups_a[0]
+        cols_b, exp_b, limbs_b = groups_b[0]
+        sub_out = _eval_4x4_group_pair(limbs_a, exp_a, limbs_b, exp_b)
+        if rows_a.size == m and cols_b.size == n:
+            return np.ascontiguousarray(sub_out, dtype=np.float64)
+        out = np.zeros((m, n), dtype=np.float64)
+        out[np.ix_(rows_a, cols_b)] = sub_out
+        return out
+
+    acc = np.zeros((m, n), dtype=np.float64)
+    err = np.zeros((m, n), dtype=np.float64)
+    for rows_a, exp_a, limbs_a in groups_a:
+        for cols_b, exp_b, limbs_b in groups_b:
+            sub_val = _eval_4x4_group_pair(limbs_a, exp_a, limbs_b, exp_b)
+            idx = np.ix_(rows_a, cols_b)
+            s = np.add(acc[idx], sub_val)
+            v = np.subtract(s, acc[idx])
+            e = np.add(np.subtract(acc[idx], np.subtract(s, v)), np.subtract(sub_val, v))
+            acc[idx] = s
+            err[idx] = np.add(err[idx], e)
+    return np.ascontiguousarray(np.add(acc, err), dtype=np.float64)
 
 
 def ozaki_exact_matmul(a: np.ndarray, b: np.ndarray, *, k_block: int = 8192) -> np.ndarray:
-    """Cross-ISA bit-identical float64 matrix multiplication via Ozaki integer-limb splitting."""
+    """Cross-ISA bit-identical float64 matrix multiplication via adaptive Ozaki integer-limb splitting."""
     a64 = np.ascontiguousarray(a, dtype=np.float64)
     b64 = np.ascontiguousarray(b, dtype=np.float64)
     if a64.ndim != 2 or b64.ndim != 2 or a64.shape[1] != b64.shape[0]:
         raise ValueError(f"Incompatible shapes for ozaki_exact_matmul: {a64.shape} vs {b64.shape}")
+    if k_block < 1 or k_block > 16384:
+        raise ValueError(f"k_block must lie in [1, 16384] for exact IEEE-754 integer products, got {k_block}")
+    if not (np.all(np.isfinite(a64)) and np.all(np.isfinite(b64))):
+        raise ValueError("ozaki_exact_matmul requires finite float64 inputs")
     k = a64.shape[1]
     if k <= k_block:
         return _ozaki_chunk(a64, b64)
-    blocks = []
+    acc = np.zeros((a64.shape[0], b64.shape[1]), dtype=np.float64)
+    err = np.zeros_like(acc)
     for start in range(0, k, k_block):
         end = min(start + k_block, k)
-        blocks.append(_ozaki_chunk(a64[:, start:end], b64[start:end, :]))
-    return ieee754_binary_sum(np.stack(blocks, axis=0), axis=0)
+        _two_sum_accumulate(acc, err, _ozaki_chunk(a64[:, start:end], b64[start:end, :]))
+    return np.ascontiguousarray(np.add(acc, err), dtype=np.float64)
 
 
 def _cholesky_unblocked(a_panel: np.ndarray) -> np.ndarray:
@@ -129,7 +212,7 @@ def _cholesky_unblocked(a_panel: np.ndarray) -> np.ndarray:
         else:
             dot_jj = 0.0
         diag_val = float(np.subtract(a_panel[j, j], dot_jj))
-        if diag_val <= 0.0:
+        if not math.isfinite(diag_val) or diag_val <= 0.0:
             raise np.linalg.LinAlgError(f"Matrix not positive definite at local index {j}: {diag_val}")
         l_jj = math.sqrt(diag_val)
         l_blk[j, j] = l_jj
@@ -177,8 +260,11 @@ def _solve_triu_left(u_blk: np.ndarray, rhs: np.ndarray) -> np.ndarray:
 
 def det_cholesky_solve(spd: np.ndarray, rhs: np.ndarray, *, block_size: int = 128) -> np.ndarray:
     """Cross-ISA bit-exact blocked Cholesky factorization and triangular solve `(spd) X = rhs`."""
-    n = spd.shape[0]
     work = np.ascontiguousarray(spd, dtype=np.float64).copy()
+    y = np.ascontiguousarray(rhs, dtype=np.float64).copy()
+    if not (np.all(np.isfinite(work)) and np.all(np.isfinite(y))):
+        raise ValueError("det_cholesky_solve requires finite float64 inputs")
+    n = work.shape[0]
     l_mat = np.zeros((n, n), dtype=np.float64)
 
     for k0 in range(0, n, block_size):
@@ -193,7 +279,6 @@ def det_cholesky_solve(spd: np.ndarray, rhs: np.ndarray, *, block_size: int = 12
                 work[k1:n, k1:n], ozaki_exact_matmul(l_sub, l_sub_t)
             )
 
-    y = np.ascontiguousarray(rhs, dtype=np.float64).copy()
     for k0 in range(0, n, block_size):
         k1 = min(k0 + block_size, n)
         y[k0:k1, :] = _solve_tril_left(l_mat[k0:k1, k0:k1], y[k0:k1, :])
@@ -214,12 +299,39 @@ def det_cholesky_solve(spd: np.ndarray, rhs: np.ndarray, *, block_size: int = 12
     return np.ascontiguousarray(x, dtype=np.float64)
 
 
+def _safe_vec_norm(v: np.ndarray) -> float:
+    """Overflow/underflow-safe deterministic Euclidean norm using power-of-2 `frexp`/`ldexp` scaling."""
+    if v.size == 0:
+        return 0.0
+    max_v = float(np.max(np.abs(v)))
+    if max_v == 0.0:
+        return 0.0
+    _, exp_v = math.frexp(max_v)
+    vs = np.ldexp(v, -exp_v)
+    return math.ldexp(math.sqrt(float(ieee754_binary_sum(np.multiply(vs, vs)))), exp_v)
+
+
+def _safe_col_norms(mat: np.ndarray) -> np.ndarray:
+    """Overflow/underflow-safe deterministic Euclidean column norms for a 2D array."""
+    if mat.shape[0] == 0 or mat.shape[1] == 0:
+        return np.zeros(mat.shape[1], dtype=np.float64)
+    max_c = np.max(np.abs(mat), axis=0)
+    _, exp_c = np.frexp(max_c)
+    exp_i32 = np.where(max_c > 0.0, exp_c, 0).astype(np.int32)
+    ms = np.ldexp(mat, -exp_i32[None, :])
+    sq = ieee754_binary_sum(np.multiply(ms, ms), axis=0)
+    norms = np.ldexp(np.sqrt(sq), exp_i32)
+    return np.where(max_c > 0.0, norms, 0.0)
+
+
 def det_householder_qr(mat: np.ndarray, *, panel_size: int = 64) -> tuple[np.ndarray, np.ndarray]:
-    """Cross-ISA bit-exact WY-blocked Householder reduced QR with non-negative R diagonal."""
+    """Cross-ISA bit-exact WY-blocked Householder reduced QR (`||u||_2 = 1`, `R_ii >= 0`)."""
     a = np.ascontiguousarray(mat, dtype=np.float64).copy()
+    if not np.all(np.isfinite(a)):
+        raise ValueError("det_householder_qr requires finite float64 input")
     m, n = a.shape
     k = min(m, n)
-    v_store = np.zeros((m, k), dtype=np.float64)
+    u_store = np.zeros((m, k), dtype=np.float64)
     taus = np.zeros(k, dtype=np.float64)
 
     for j0 in range(0, k, panel_size):
@@ -230,58 +342,92 @@ def det_householder_qr(mat: np.ndarray, *, panel_size: int = 64) -> tuple[np.nda
         for jj in range(b):
             j = j0 + jj
             x = a[j:, j]
-            tail_sq = float(ieee754_binary_sum(np.multiply(x[1:], x[1:]))) if x.size > 1 else 0.0
-            if tail_sq == 0.0 and x[0] >= 0.0:
-                v_store[j, j] = 1.0
+            max_x = float(np.max(np.abs(x)))
+            if max_x == 0.0:
+                u_store[j, j] = 1.0
                 taus[j] = 0.0
-                continue
-            norm_x = math.sqrt(float(np.add(np.multiply(x[0], x[0]), tail_sq)))
-            if norm_x == 0.0:
-                v_store[j, j] = 1.0
-                taus[j] = 0.0
+                a[j, j] = 0.0
                 continue
 
-            x0 = float(x[0])
-            if x0 <= 0.0:
-                v0 = float(np.subtract(x0, norm_x))
+            _, exp_x = math.frexp(max_x)
+            xs = np.ldexp(x, -exp_x)
+            xs0 = float(xs[0])
+            max_tail = float(np.max(np.abs(xs[1:]))) if xs.size > 1 else 0.0
+
+            if max_tail == 0.0:
+                if xs0 >= 0.0:
+                    u_store[j, j] = 1.0
+                    taus[j] = 0.0
+                    a[j, j] = float(x[0])
+                    continue
+                u = np.zeros(m - j, dtype=np.float64)
+                u[0] = 1.0
+                tau = 2.0
+                norm_x = -float(x[0])
             else:
-                v0 = -float(np.divide(tail_sq, np.add(x0, norm_x)))
+                _, exp_t = math.frexp(max_tail)
+                xt = np.ldexp(xs[1:], -exp_t)
+                tail_unit_norm = math.sqrt(float(ieee754_binary_sum(np.multiply(xt, xt))))
+                tail_norm_s = math.ldexp(tail_unit_norm, exp_t)
 
-            tau = float(np.divide(2.0 * v0 * v0, np.add(tail_sq, v0 * v0)))
-            v = np.zeros(m - j, dtype=np.float64)
-            v[0] = 1.0
-            if x.size > 1:
-                v[1:] = np.divide(x[1:], v0)
+                a0 = abs(xs0)
+                if a0 == 0.0:
+                    norm_xs = tail_norm_s
+                elif a0 >= tail_norm_s:
+                    r_ratio = tail_norm_s / a0
+                    norm_xs = a0 * math.sqrt(1.0 + r_ratio * r_ratio)
+                else:
+                    r_ratio = a0 / tail_norm_s
+                    norm_xs = tail_norm_s * math.sqrt(1.0 + r_ratio * r_ratio)
+                norm_x = math.ldexp(norm_xs, exp_x)
 
-            v_store[j:, j] = v
+                if xs0 <= 0.0:
+                    v0 = xs0 - norm_xs
+                    w_tail = np.divide(np.ldexp(xt, exp_t), v0)
+                    u_norm = math.sqrt(1.0 + float(ieee754_binary_sum(np.multiply(w_tail, w_tail))))
+                    u = np.empty(m - j, dtype=np.float64)
+                    u[0] = -1.0 / u_norm
+                    u[1:] = np.divide(-w_tail, u_norm)
+                    tau = 2.0
+                else:
+                    alpha = -tail_norm_s / (xs0 + norm_xs)
+                    if alpha == 0.0:
+                        u_store[j, j] = 1.0
+                        taus[j] = 0.0
+                        a[j, j] = norm_x
+                        a[j + 1 :, j] = 0.0
+                        continue
+                    inv_unorm = 1.0 / math.sqrt(1.0 + alpha * alpha)
+                    u = np.empty(m - j, dtype=np.float64)
+                    u[0] = alpha * inv_unorm
+                    u[1:] = np.multiply(xt, inv_unorm / tail_unit_norm)
+                    tau = 2.0
+
+            u_store[j:, j] = u
             taus[j] = tau
             a[j, j] = norm_x
             if j + 1 < m:
                 a[j + 1 :, j] = 0.0
 
             if j + 1 < j1:
-                w = ieee754_binary_sum(
-                    np.multiply(v[:, None], a[j:, j + 1 : j1]), axis=0
-                )
+                w = ozaki_exact_matmul(u[None, :], a[j:, j + 1 : j1])[0]
                 a[j:, j + 1 : j1] = np.subtract(
-                    a[j:, j + 1 : j1], np.multiply(tau * v[:, None], w[None, :])
+                    a[j:, j + 1 : j1], np.multiply(tau * u[:, None], w[None, :])
                 )
 
             t_wy[jj, jj] = tau
             if jj > 0 and tau != 0.0:
-                vt_v = ieee754_binary_sum(
-                    np.multiply(v_store[j:, j0 : j0 + jj], v[:, None]), axis=0
-                )
+                ut_u = ozaki_exact_matmul(u_store[j:, j0 : j0 + jj].T, u[:, None])[:, 0]
                 z = -tau * ieee754_binary_sum(
-                    np.multiply(t_wy[:jj, :jj], vt_v[None, :]), axis=1
+                    np.multiply(t_wy[:jj, :jj], ut_u[None, :]), axis=1
                 )
                 t_wy[:jj, jj] = z
 
         if j1 < n:
-            v_panel = v_store[j0:, j0:j1]
-            vt_a = ozaki_exact_matmul(v_panel.T, a[j0:, j1:])
-            t_vt_a = ozaki_exact_matmul(t_wy.T, vt_a)
-            a[j0:, j1:] = np.subtract(a[j0:, j1:], ozaki_exact_matmul(v_panel, t_vt_a))
+            u_panel = u_store[j0:, j0:j1]
+            ut_a = ozaki_exact_matmul(u_panel.T, a[j0:, j1:])
+            t_ut_a = ozaki_exact_matmul(t_wy.T, ut_a)
+            a[j0:, j1:] = np.subtract(a[j0:, j1:], ozaki_exact_matmul(u_panel, t_ut_a))
 
     r_mat = np.triu(a[:k, :]).copy()
 
@@ -299,16 +445,16 @@ def det_householder_qr(mat: np.ndarray, *, panel_size: int = 64) -> tuple[np.nda
             tau = taus[j]
             t_wy[jj, jj] = tau
             if jj > 0 and tau != 0.0:
-                vt_v = ieee754_binary_sum(
-                    np.multiply(v_store[j:, j0 : j0 + jj], v_store[j:, j][:, None]), axis=0
-                )
+                ut_u = ozaki_exact_matmul(
+                    u_store[j:, j0 : j0 + jj].T, u_store[j:, j : j + 1]
+                )[:, 0]
                 t_wy[:jj, jj] = -tau * ieee754_binary_sum(
-                    np.multiply(t_wy[:jj, :jj], vt_v[None, :]), axis=1
+                    np.multiply(t_wy[:jj, :jj], ut_u[None, :]), axis=1
                 )
-        v_panel = v_store[j0:, j0:j1]
-        vt_q = ozaki_exact_matmul(v_panel.T, q_mat[j0:, j0:])
-        t_vt_q = ozaki_exact_matmul(t_wy, vt_q)
-        q_mat[j0:, j0:] = np.subtract(q_mat[j0:, j0:], ozaki_exact_matmul(v_panel, t_vt_q))
+        u_panel = u_store[j0:, j0:j1]
+        ut_q = ozaki_exact_matmul(u_panel.T, q_mat[j0:, j0:])
+        t_ut_q = ozaki_exact_matmul(t_wy, ut_q)
+        q_mat[j0:, j0:] = np.subtract(q_mat[j0:, j0:], ozaki_exact_matmul(u_panel, t_ut_q))
 
     return np.ascontiguousarray(q_mat, dtype=np.float64), np.ascontiguousarray(r_mat, dtype=np.float64)
 
@@ -327,14 +473,60 @@ def _round_robin_pairs(p_even: int) -> list[tuple[np.ndarray, np.ndarray]]:
     return schedule
 
 
+def _complete_orthonormal_u(w_sorted: np.ndarray, s_vals: np.ndarray) -> np.ndarray:
+    """Build strictly orthonormal `U` (`m x n`, `m >= n`) via 2-pass MGS + deterministic basis completion."""
+    m, n = w_sorted.shape
+    u_mat = np.zeros((m, n), dtype=np.float64)
+    s0 = float(s_vals[0]) if n > 0 else 0.0
+    noise_floor = s0 * float(max(m, n)) * 2.220446049250313e-16
+
+    for k in range(n):
+        sk = float(s_vals[k])
+        placed = False
+        if sk > noise_floor:
+            cand = np.divide(w_sorted[:, k], sk)
+            if k > 0:
+                u_prev = u_mat[:, :k]
+                for _ in range(2):
+                    proj = ieee754_binary_sum(np.multiply(u_prev, cand[:, None]), axis=0)
+                    cand = np.subtract(
+                        cand, ieee754_binary_sum(np.multiply(u_prev, proj[None, :]), axis=1)
+                    )
+            rem_norm = _safe_vec_norm(cand)
+            if rem_norm > 0.5:
+                u_mat[:, k] = np.divide(cand, rem_norm)
+                placed = True
+
+        if not placed:
+            if k == 0:
+                u_mat[0, 0] = 1.0
+            else:
+                u_prev = u_mat[:, :k]
+                row_energy = ieee754_binary_sum(np.multiply(u_prev, u_prev), axis=1)
+                idx = int(np.argmin(row_energy))
+                cand = np.zeros(m, dtype=np.float64)
+                cand[idx] = 1.0
+                for _ in range(2):
+                    proj = ieee754_binary_sum(np.multiply(u_prev, cand[:, None]), axis=0)
+                    cand = np.subtract(
+                        cand, ieee754_binary_sum(np.multiply(u_prev, proj[None, :]), axis=1)
+                    )
+                rem_norm = _safe_vec_norm(cand)
+                u_mat[:, k] = np.divide(cand, rem_norm)
+
+    return u_mat
+
+
 def det_jacobi_svd(
     mat: np.ndarray,
     *,
-    max_sweeps: int = 15,
+    max_sweeps: int = 60,
     tol: float = 1e-15,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Cross-ISA bit-exact SVD via algebraic sqrt-only Round-Robin One-Sided Jacobi."""
+    """Cross-ISA bit-exact SVD via scale-invariant algebraic sqrt-only Round-Robin Jacobi."""
     a = np.ascontiguousarray(mat, dtype=np.float64)
+    if not np.all(np.isfinite(a)):
+        raise ValueError("det_jacobi_svd requires finite float64 input")
     m, n = a.shape
     transposed = False
     if m < n:
@@ -348,20 +540,40 @@ def det_jacobi_svd(
             np.zeros(0, dtype=np.float64),
             np.zeros((0, mat.shape[1]), dtype=np.float64),
         )
-    if n == 1:
-        col = a[:, 0]
-        s0 = math.sqrt(float(ieee754_binary_sum(np.multiply(col, col))))
-        u = np.divide(col, s0)[:, None] if s0 > 0.0 else np.eye(m, 1, dtype=np.float64)
-        vh = np.ones((1, 1), dtype=np.float64)
+
+    max_abs = float(np.max(np.abs(a)))
+    if max_abs == 0.0:
+        u_zero = np.eye(m, n, dtype=np.float64)
+        s_zero = np.zeros(n, dtype=np.float64)
+        vh_zero = np.eye(n, dtype=np.float64)
         if transposed:
-            return vh.T, np.array([s0], dtype=np.float64), u.T
-        return u, np.array([s0], dtype=np.float64), vh
+            return vh_zero.T.copy(), s_zero, u_zero.T.copy()
+        return u_zero, s_zero, vh_zero
+
+    _, exp_scale = math.frexp(max_abs)
+    a_sc = np.ldexp(a, -exp_scale)
+
+    if n == 1:
+        col = a_sc[:, 0]
+        s0_sc = _safe_vec_norm(col)
+        u = np.divide(col, s0_sc)[:, None] if s0_sc > 0.0 else np.eye(m, 1, dtype=np.float64)
+        vh = np.ones((1, 1), dtype=np.float64)
+        s_arr = np.array([math.ldexp(s0_sc, exp_scale)], dtype=np.float64)
+        if transposed:
+            return vh.T.copy(), s_arr, np.ascontiguousarray(u.T, dtype=np.float64)
+        return np.ascontiguousarray(u, dtype=np.float64), s_arr, vh
+
+    init_norms = _safe_col_norms(a_sc)
+    init_perm = np.lexsort((np.arange(n, dtype=np.int64), -init_norms))
 
     pad = n % 2
     p = n + pad
     w = np.zeros((m, p), dtype=np.float64)
-    w[:, :n] = a
-    v = np.eye(p, dtype=np.float64)
+    w[:, :n] = a_sc[:, init_perm]
+    v = np.zeros((p, p), dtype=np.float64)
+    v[init_perm, np.arange(n, dtype=np.int64)] = 1.0
+    if pad:
+        v[n, n] = 1.0
     schedule = _round_robin_pairs(p)
 
     for _ in range(max_sweeps):
@@ -369,29 +581,54 @@ def det_jacobi_svd(
         for idx_i, idx_j in schedule:
             wi = w[:, idx_i]
             wj = w[:, idx_j]
-            aii = ieee754_binary_sum(np.multiply(wi, wi), axis=0)
-            ajj = ieee754_binary_sum(np.multiply(wj, wj), axis=0)
-            aij = ieee754_binary_sum(np.multiply(wi, wj), axis=0)
+            ni = _safe_col_norms(wi)
+            nj = _safe_col_norms(wj)
+            both_pos = (ni > 0.0) & (nj > 0.0)
+            if not np.any(both_pos):
+                continue
 
-            denom_norm = np.sqrt(np.multiply(aii, ajj))
-            safe_denom = np.where(denom_norm > 0.0, denom_norm, 1.0)
-            active = (denom_norm > 0.0) & (np.abs(aij) > tol * denom_norm)
+            safe_ni = np.where(ni > 0.0, ni, 1.0)
+            safe_nj = np.where(nj > 0.0, nj, 1.0)
+            ui = np.where(both_pos[None, :], np.divide(wi, safe_ni[None, :]), 0.0)
+            uj = np.where(both_pos[None, :], np.divide(wj, safe_nj[None, :]), 0.0)
+            cos_ij = ieee754_binary_sum(np.multiply(ui, uj), axis=0)
+            abs_cos = np.abs(cos_ij)
+
+            active = both_pos & (abs_cos > tol)
             if not np.any(active):
                 continue
 
-            rel = np.where(denom_norm > 0.0, np.divide(np.abs(aij), safe_denom), 0.0)
-            step_max = float(np.max(rel))
+            step_max = float(np.max(np.where(both_pos, abs_cos, 0.0)))
             if step_max > max_rel_off:
                 max_rel_off = step_max
 
-            safe_aij = np.where(active, aij, 1.0)
-            tau = np.divide(np.subtract(ajj, aii), np.multiply(2.0, safe_aij))
-            sign_tau = np.where(tau >= 0.0, 1.0, -1.0)
-            t = np.divide(
-                sign_tau,
-                np.add(np.abs(tau), np.sqrt(np.add(1.0, np.multiply(tau, tau)))),
+            r_max = np.maximum(ni, nj)
+            safe_rmax = np.where(r_max > 0.0, r_max, 1.0)
+            si = np.divide(ni, safe_rmax)
+            sj = np.divide(nj, safe_rmax)
+
+            num = np.multiply(2.0, np.multiply(np.multiply(si, sj), cos_ij))
+            den = np.multiply(np.subtract(sj, si), np.add(sj, si))
+            abs_num = np.abs(num)
+            abs_den = np.abs(den)
+
+            branch1 = abs_den <= abs_num
+            safe_num = np.where(branch1 & (abs_num > 0.0), num, 1.0)
+            tau_b1 = np.divide(den, safe_num)
+            sign_b1 = np.where(tau_b1 >= 0.0, 1.0, -1.0)
+            t_b1 = np.divide(
+                sign_b1,
+                np.add(np.abs(tau_b1), np.sqrt(np.add(1.0, np.multiply(tau_b1, tau_b1)))),
             )
-            t = np.where(active, t, 0.0)
+
+            safe_den = np.where((~branch1) & (abs_den > 0.0), den, 1.0)
+            inv_tau = np.divide(num, safe_den)
+            t_b2 = np.divide(
+                inv_tau,
+                np.add(1.0, np.sqrt(np.add(1.0, np.multiply(inv_tau, inv_tau)))),
+            )
+
+            t = np.where(active, np.where(branch1, t_b1, t_b2), 0.0)
             c = np.divide(1.0, np.sqrt(np.add(1.0, np.multiply(t, t))))
             s = np.multiply(t, c)
 
@@ -408,20 +645,15 @@ def det_jacobi_svd(
 
     w_real = w[:, :n]
     v_real = v[:n, :n]
-    s_raw = np.sqrt(ieee754_binary_sum(np.multiply(w_real, w_real), axis=0))
+    s_raw_sc = _safe_col_norms(w_real)
 
-    order = np.lexsort((np.arange(n, dtype=np.int64), -s_raw))
-    s_vals = np.ascontiguousarray(s_raw[order], dtype=np.float64)
+    order = np.lexsort((np.arange(n, dtype=np.int64), -s_raw_sc))
+    s_sorted_sc = np.ascontiguousarray(s_raw_sc[order], dtype=np.float64)
     w_sorted = w_real[:, order]
     v_sorted = v_real[:, order]
 
-    u_mat = np.zeros((m, n), dtype=np.float64)
-    for k in range(n):
-        sk = float(s_vals[k])
-        if sk > 0.0:
-            u_mat[:, k] = np.divide(w_sorted[:, k], sk)
-        elif k < m:
-            u_mat[k, k] = 1.0
+    u_mat = _complete_orthonormal_u(w_sorted, s_sorted_sc)
+    s_vals = np.ascontiguousarray(np.ldexp(s_sorted_sc, exp_scale), dtype=np.float64)
     vh_mat = np.ascontiguousarray(v_sorted.T, dtype=np.float64)
 
     if transposed:
@@ -442,7 +674,9 @@ def canonicalize_output_factors(b_mat: np.ndarray, a_mat: np.ndarray) -> tuple[n
         if b[idx, k] < 0.0:
             b[:, k] = -b[:, k]
             a[k, :] = -a[k, :]
-    return b, a
+    b = np.where(b == 0.0, 0.0, b)
+    a = np.where(a == 0.0, 0.0, a)
+    return np.ascontiguousarray(b, dtype=np.float64), np.ascontiguousarray(a, dtype=np.float64)
 
 
 def det_decompose_rank_r(
@@ -458,8 +692,8 @@ def det_decompose_rank_r(
     core = ozaki_exact_matmul(r_l, r_r.T)
     u_c, s_vals, vh_c = det_jacobi_svd(core)
 
-    tot = float(ieee754_binary_sum(np.multiply(s_vals, s_vals)))
-    if tot == 0.0:
+    s_norm = _safe_vec_norm(s_vals)
+    if s_norm == 0.0:
         return (
             np.zeros((l64.shape[0], 1), dtype=np.float64),
             np.zeros((1, r64.shape[1]), dtype=np.float64),
@@ -469,16 +703,12 @@ def det_decompose_rank_r(
 
     r_eff = min(max_rank, int(s_vals.size))
     s_kept = np.ascontiguousarray(s_vals[:r_eff], dtype=np.float64)
-    disc = (
-        float(ieee754_binary_sum(np.multiply(s_vals[r_eff:], s_vals[r_eff:])))
-        if r_eff < s_vals.size
-        else 0.0
-    )
+    disc_norm = _safe_vec_norm(s_vals[r_eff:]) if r_eff < s_vals.size else 0.0
     sqrt_s = np.sqrt(s_kept)
     b_raw = np.multiply(ozaki_exact_matmul(q_l, u_c[:, :r_eff]), sqrt_s[None, :])
     a_raw = np.multiply(sqrt_s[:, None], ozaki_exact_matmul(vh_c[:r_eff, :], q_r.T))
     b_canon, a_canon = canonicalize_output_factors(b_raw, a_raw)
-    trunc_err = math.sqrt(max(0.0, disc) / tot)
+    trunc_err = float(disc_norm / s_norm)
     return b_canon, a_canon, s_kept, trunc_err
 
 
@@ -515,7 +745,8 @@ def det_active_basis(
     if n0 == 0:
         return None, d_in
 
-    frob_sq_k0 = float(ieee754_binary_sum(np.multiply(k0, k0).reshape(-1)))
+    frob_k0 = _safe_vec_norm(k0.reshape(-1))
+    frob_sq_k0 = frob_k0 * frob_k0
     if threshold_mode == "absolute" and frob_sq_k0 < cutoff:
         return None, d_in
 
@@ -529,7 +760,12 @@ def det_active_basis(
         if float(eigvals_desc[0]) < eff_cutoff:
             return None, d_in
         max_active = max(0, d_in - min_nullspace_dim)
-        n_active = min(int(np.sum(eigvals_desc >= eff_cutoff)), max_active)
+        if eff_cutoff <= 0.0:
+            pos_floor = float(s_k[0]) * float(max(d_in, n0)) * 2.220446049250313e-16
+            n_above = int(np.sum(s_k > pos_floor))
+        else:
+            n_above = int(np.sum(eigvals_desc >= eff_cutoff))
+        n_active = min(n_above, max_active)
         if n_active == 0:
             return None, d_in
         u_active = ozaki_exact_matmul(q_k, u_r[:, :n_active])
@@ -543,7 +779,12 @@ def det_active_basis(
         if float(eigvals_desc[0]) < eff_cutoff:
             return None, d_in
         max_active = max(0, d_in - min_nullspace_dim)
-        n_active = min(int(np.sum(eigvals_desc >= eff_cutoff)), max_active)
+        if eff_cutoff <= 0.0:
+            pos_floor = float(s_k[0]) * float(max(d_in, n0)) * 2.220446049250313e-16
+            n_above = int(np.sum(s_k > pos_floor))
+        else:
+            n_above = int(np.sum(eigvals_desc >= eff_cutoff))
+        n_active = min(n_above, max_active)
         if n_active == 0:
             return None, d_in
         u_active = np.ascontiguousarray(vh_r[:n_active, :].T, dtype=np.float64)
@@ -614,22 +855,26 @@ def solve_betaedit_with_basis(
     rank: int,
     lambda_ridge: float,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, float]:
-    """Solve projected BetaEdit Eq. (9) given precomputed active-range basis `u_active`."""
+    """Solve projected BetaEdit Eq. (9) via cancellation-free direct push-through identity."""
     d_in = k_solve.shape[0]
+    nk_cols = k_solve.shape[1]
     pk0 = apply_p_null(u_active, cov_factors) if cov_factors.shape[1] > 0 else cov_factors
     pk_solve = apply_p_null(u_active, k_solve)
     m_all = np.concatenate([pk0, pk_solve], axis=1) if pk0.shape[1] > 0 else pk_solve
     n0_cols = pk0.shape[1]
     m_total = m_all.shape[1]
     lr = float(lambda_ridge)
+    if not math.isfinite(lr) or lr <= 0.0:
+        raise ValueError(f"lambda_ridge must be finite and strictly positive, got {lambda_ridge}")
 
     if m_total <= d_in:
         gram = ozaki_exact_matmul(m_all.T, m_all)
         gram_sym = np.multiply(0.5, np.add(gram, gram.T))
         spd_dual = np.add(np.multiply(lr, np.eye(m_total, dtype=np.float64)), gram_sym)
-        rhs_dual = np.ascontiguousarray(gram[:, n0_cols:], dtype=np.float64)
-        w_dual = det_cholesky_solve(spd_dual, rhs_dual)
-        z_solved = np.divide(np.subtract(pk_solve, ozaki_exact_matmul(m_all, w_dual)), lr)
+        e_solve = np.zeros((m_total, nk_cols), dtype=np.float64)
+        e_solve[n0_cols:, :] = np.eye(nk_cols, dtype=np.float64)
+        w_push = det_cholesky_solve(spd_dual, e_solve)
+        z_solved = ozaki_exact_matmul(m_all, w_push)
     else:
         mm_t = ozaki_exact_matmul(m_all, m_all.T)
         mm_sym = np.multiply(0.5, np.add(mm_t, mm_t.T))
