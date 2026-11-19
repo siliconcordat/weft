@@ -58,9 +58,13 @@ Every Weft adapter carries a five-layer binding manifest checked by Layer 3 (`si
 
 After canonical round-to-nearest-even quantization, the compiler emits a `FixedRadixCertificate`. This record stores scaled integers for squared Frobenius norm, squared spectral norm, preserved-key leakage energy, and squared safety-direction dot products. The load verifier checks every policy limit using exact integer cross-multiplication with zero floating-point division.
 
-## Asymmetric factor packing and calibration hygiene
+## Asymmetric factor packing, wire container, and calibration hygiene
 
 Weft supports independent factor precisions `(b_quant_dtype, a_quant_dtype)` across `f32`, `f16`, `bf16`, `int8`, and packed-nibble `int4` with per-rank-vector scales (`axis = 0` on `B`, `axis = 1` on `A`). Because `A K0 = 0` eliminates `B` quantization error to first order (`Q(B) Q(A) K0 = Q(B) E_A K0`), pairing `int4` `B` with `int8` or `f16` `A` cuts adapter memory on wide-output layers (`W_up`, `W_gate`) by 39 to 69 percent while keeping null-space leakage near full precision.
+
+To carry asymmetric packed adapters alongside their verification pins, `src/weft/slab_wire.py` defines the deterministic binary container `weft-slab/v0.1` (`WFSL` magic). Each file packs a canonical duplicate-key-rejected JSON header (dtypes, shapes, per-rank scale axes, `base_weights_sha256`, L5 `zone_manifest_id`, and embedded `FixedRadixCertificate`), raw `b_bytes || a_bytes`, and a 32-byte SHA-256 trailer checked before parsing.
+
+On a 4B-scale `W_up` layer (`10240 x 2560`, rank 16), an `int4 / int8` `weft-slab/v0.1` file is 69.8 percent smaller than standard F16 GGUF LoRA (`123,933` vs `410,016` bytes) while decoding bit-for-bit identically.
 
 Four cross-repo quantization and probing findings shape Milestone 3 calibration:
 

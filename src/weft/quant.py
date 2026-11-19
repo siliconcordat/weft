@@ -197,6 +197,40 @@ def quantize_array(arr: np.ndarray, dtype: str, *, axis: int = 1) -> tuple[bytes
     raise ValueError(f"Unsupported adapter quantization dtype: {dtype!r}")
 
 
+def dequantize_array(
+    raw: bytes, shape: tuple[int, int], dtype: str, *, axis: int = 1
+) -> np.ndarray:
+    """Decode canonical quantized bytes back to exact float64 values for any supported dtype."""
+    rows, cols = int(shape[0]), int(shape[1])
+    if rows <= 0 or cols <= 0:
+        raise ValueError(f"Invalid shape {shape} for dequantization.")
+    n_elems = rows * cols
+    if dtype == "bf16":
+        expected = n_elems * 2
+        if len(raw) != expected:
+            raise ValueError(f"Expected {expected} BF16 bytes for shape {shape}, got {len(raw)}.")
+        bits = np.frombuffer(raw, dtype="<u2").reshape(rows, cols)
+        out = bf16_bits_to_float64(bits)
+        return _require_finite(out)
+    if dtype == "f16":
+        expected = n_elems * 2
+        if len(raw) != expected:
+            raise ValueError(f"Expected {expected} F16 bytes for shape {shape}, got {len(raw)}.")
+        arr = np.frombuffer(raw, dtype="<f2").reshape(rows, cols).astype(np.float64)
+        return _require_finite(arr)
+    if dtype == "f32":
+        expected = n_elems * 4
+        if len(raw) != expected:
+            raise ValueError(f"Expected {expected} F32 bytes for shape {shape}, got {len(raw)}.")
+        arr = np.frombuffer(raw, dtype="<f4").reshape(rows, cols).astype(np.float64)
+        return _require_finite(arr)
+    if dtype == "int8":
+        return dequantize_int8(raw, (rows, cols), axis=axis)
+    if dtype == "int4":
+        return dequantize_int4(raw, (rows, cols), axis=axis)
+    raise ValueError(f"Unsupported adapter quantization dtype: {dtype!r}")
+
+
 def sha256_factor_pair(
     b_bytes: bytes,
     a_bytes: bytes,

@@ -21,12 +21,20 @@ from .certificate import FixedRadixCertificate, GatePolicy, build_certificate
 from .compiler import BetaEditConfig, BetaEditNullspaceProjector, StagedPatch, verify_rederivation
 from .gguf_lora import GGUFLoraAdapter, read_gguf_lora, write_gguf_lora
 from .quant import (
+    dequantize_array,
     dequantize_int4,
     dequantize_int8,
     quantize_bf16,
     quantize_f16,
     quantize_int4,
     quantize_int8,
+)
+from .slab_wire import (
+    WEFT_SLAB_FORMAT,
+    SlabWireContainer,
+    read_slab_wire,
+    verify_slab_wire,
+    write_slab_wire,
 )
 
 __all__ = [
@@ -42,11 +50,14 @@ __all__ = [
     "GatePolicy",
     "GateVerdict",
     "RuntimeFlags",
+    "SlabWireContainer",
     "StagedPatch",
     "VerifyResult",
+    "WEFT_SLAB_FORMAT",
     "build_binding_manifest",
     "build_certificate",
     "check_flake_stability",
+    "dequantize_array",
     "dequantize_int4",
     "dequantize_int8",
     "evaluate_adapter_gate",
@@ -56,9 +67,12 @@ __all__ = [
     "quantize_int4",
     "quantize_int8",
     "read_gguf_lora",
+    "read_slab_wire",
     "verify_binding",
     "verify_rederivation",
+    "verify_slab_wire",
     "write_gguf_lora",
+    "write_slab_wire",
 ]
 
 __version__ = "0.1.0"

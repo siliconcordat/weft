@@ -12,6 +12,7 @@ python3 -m venv .venv
 .venv/bin/python experiments/e2_anti_goodhart_gate.py
 .venv/bin/python experiments/e3_real_checkpoint_smoke.py
 .venv/bin/python experiments/e4_asymmetric_quant_packing.py
+.venv/bin/python experiments/e5_noise_k0_scaling_and_readout.py
 ```
 
 ## E1: Shared-token null-space collapse vs register-scoped composition
@@ -137,3 +138,49 @@ Two probes tested whether quantization findings from 1B-scale models transfer to
 
 - **Noise-only `K0` covariance works on `TinyStories-1M`:** Running 64 random vocabulary token sequences (zero real text) recovers 83.9 percent of real-text holdout `K0` leakage protection at matched trace, with a 9 percent target-margin tax (`+18.92` vs `+20.77`).
 - **Honest scale boundary on `ffn_down` loud columns:** On `TinyStories-1M`, `mlp.c_proj` column L2 norms are nearly flat (max-to-mean ratio `1.21` to `1.41` across all 8 layers), unlike 1B-scale Llama models with massive outlier units. Leaving the top-10 weight-norm columns whole under INT4 base quantization lowers Layer-7 `K0` max logit drift only modestly (`4.1657` to `4.0039`, top-1 retention unchanged at `12/16`). Loud-column gains must be tested on 1.5B to 8B checkpoints in Milestone 3.
+
+## E5: Seeded-noise `K0` scaling, wire-dialect readout repair, and `weft-slab/v0.1`
+
+Scope (`verified` on real pretrained `roneneldan/TinyStories-1M`, Layer-7 `mlp.c_proj` of shape `64 x 256`, 32 disjoint real narrative prompts split into 16 train and 16 strictly unseen holdout prompts, physically matched residual scale `0.40` / `0.35`, vectorized batch parity max diff `0.0`).
+
+### Part A: Seeded-noise `K0` Marchenko-Pastur scaling curve (zero real calibration text)
+
+Random vocabulary token sequences (`seed = 20261119`, `n_noise = 32` to `2048`, trace-normalized `K K^T / n`, `lambda_leakage = 60.0`, `int4 / f16` factors) vs 16 real story prompts and a hybrid arm adding 16 register-scoped `y = 0` anchors:
+
+| Arm (evaluated on 16 unseen stories) | `n / d_in` | `K0` Eff. Rank | Holdout `K0` Leak | Top-1 Retained | Max Logit Drift | Val Target Margin | Recovery vs Real |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `naive_unregularized` | 0.0 | 0.00 | 0.879786 | 4/16 | 14.7901 | +15.2067 | 0.0% |
+| `noise_n32` (0 real text) | 0.125 | 2.28 | 0.667700 | 3/16 | 14.0971 | +7.1733 | 35.8% |
+| `noise_n64` (0 real text) | 0.250 | 2.30 | 0.571813 | 6/16 | 13.3046 | +6.0371 | 52.0% |
+| `noise_n256` (0 real text) | 1.000 | 2.59 | 0.583776 | 5/16 | 12.6347 | +7.0158 | 50.0% |
+| `noise_n512` (0 real text) | 2.000 | 2.51 | 0.556300 | 5/16 | 12.6633 | +6.9700 | 54.6% |
+| `noise_n1024` (0 real text) | 4.000 | 2.44 | 0.603129 | 4/16 | 13.3051 | +7.0662 | 46.7% |
+| `noise_n2048` (0 real text) | 8.000 | 2.42 | 0.564394 | 5/16 | 13.0303 | +6.9445 | 53.2% |
+| `real_text_n16` | 0.063 | 4.04 | 0.287497 | 13/16 | 10.9856 | +9.8143 | 100.0% |
+| `hybrid_noise2048_plus_16_y0` | 8.000 | 2.42 | 0.217666 | 10/16 | 7.7799 | +4.4852 | 111.8% |
+
+Honest finding: increasing seeded random-token noise from `n = 64` to `n = 2048` does **not** close the remaining gap to real-text calibration. Uniform random vocab tokens saturate at participation-ratio effective rank `2.42` vs `4.04` for English stories, plateauing at 52 to 55 percent holdout leakage recovery (`0.564` vs `0.287`).
+
+Seed-only 0-byte re-derivation passes (`true`), making seeded noise a reliable zero-corpus floor. Pairing it with 16 public `y = 0` anchors beats `real_text_n16` on unseen leakage (`0.218`) and max logit drift (`7.78` vs `10.99`) at a lower target margin (`+4.49` vs `+9.81`).
+
+### Part B: Parametric wire-dialect readout adapter (`int4 / int8`)
+
+Sixteen train and 16 unseen validation messages pair varying prefixes with 4 compact symbolic dialect tags (`@A` to `@D`) mapping to `[yes, no, stop, run]`. On the base model, a linear probe on Layer-7 hidden states scores `1.000` (`16/16`) while the unadapted readout scores `0.125` (`2/16`, mean margin `-2.3031`), reproducing the hidden-state vs readout gap on real pretrained weights:
+
+| Readout Arm (`int4 / int8`, rank 4) | Unseen Dialect Acc | Mean Class Margin | Unseen `K0` Leak | Unseen `K0` Top-1 | Unseen `K0` Max Drift |
+| --- | --- | --- | --- | --- | --- |
+| `base_unadapted` (linear probe `1.000`) | 0.125 (2/16) | -2.3031 | 0.000000 | 16/16 | 0.0000 |
+| `naive_int4_int8` (`lambda = 0`) | 1.000 (16/16) | +16.8420 | 0.838508 | 1/16 | 18.0652 |
+| `seeded_noise_int4_int8` (0 real text) | 1.000 (16/16) | +9.9781 | 0.360385 | 8/16 | 13.2972 |
+| `hybrid_noise_plus_16_y0_int4_int8` | 1.000 (16/16) | +9.4899 | 0.141029 | 13/16 | 5.1677 |
+
+All adapted arms recover `16/16` unseen dialect accuracy with `0.0` rollback logit diff. Seeded-noise `K0` alone cuts unseen narrative leakage 2.33x and raises unseen story top-1 retention from `1/16` to `8/16`. Adding 16 public `y = 0` anchors cuts leakage 5.95x (`0.839` to `0.141`), raises retention to `13/16`, and cuts max drift 3.50x while keeping class margin at `+9.49`.
+
+### Part C: `weft-slab/v0.1` binary container vs F16 GGUF LoRA
+
+| Target Tensor (Asymmetric `int4 / int8`) | `weft-slab/v0.1` Bytes | F16 GGUF LoRA Bytes | Size Reduction | Verify / Drift Reject / Round-trip |
+| --- | --- | --- | --- | --- |
+| `TinyStories-1M` `mlp.c_proj` (`64 x 256`, `r = 4`) | 2,121 | 2,976 | 28.7% | `true` / `true` / `true` |
+| 4B-scale `W_up` (`10240 x 2560`, `r = 16`) | 123,933 | 410,016 | 69.8% | `true` / `true` / `true` |
+
+`weft-slab/v0.1` embeds the full `FixedRadixCertificate`, `base_weights_sha256`, L5 `zone_manifest_id` pin, duplicate-key-rejected canonical JSON header, and 32-byte SHA-256 trailer while still cutting 4B-scale wide-output adapter size 69.8 percent below standard F16 GGUF LoRA.

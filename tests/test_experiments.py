@@ -1,4 +1,4 @@
-"""Regression tests verifying the core invariants of Experiments E1 through E4."""
+"""Regression tests verifying the core invariants of Experiments E1 through E5."""
 
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ from experiments.e1_shared_token_composition import run_experiment as run_e1
 from experiments.e2_anti_goodhart_gate import run_experiment as run_e2
 from experiments.e3_real_checkpoint_smoke import run_experiment as run_e3
 from experiments.e4_asymmetric_quant_packing import run_experiment as run_e4
+from experiments.e5_noise_k0_scaling_and_readout import run_experiment as run_e5
 
 
 def test_e1_marchenko_pastur_and_zone_routing_invariants() -> None:
@@ -98,3 +99,45 @@ def test_e4_asymmetric_quant_packing_beats_uniform_int4_and_reversed_control() -
     assert nk["noise_only_k0_soft"]["holdout_real_k0_leakage_fro"] < (
         nk["naive_unregularized"]["holdout_real_k0_leakage_fro"] * 0.65
     )
+
+
+def test_e5_noise_k0_scaling_readout_bridge_and_slab_wire() -> None:
+    res = run_e5()
+    assert res["batch_forward_parity_max_diff"] < 1e-11
+
+    pa = res["part_a_seeded_noise_k0_curve"]
+    assert pa["seed_only_zero_byte_rederivation_n2048"] is True
+    arms = pa["arms"]
+    assert arms["noise_n2048"]["holdout_k0_linear_leakage_fro"] < (
+        arms["naive_unregularized"]["holdout_k0_linear_leakage_fro"] * 0.70
+    )
+    assert arms["hybrid_noise2048_plus_16_y0"]["holdout_k0_linear_leakage_fro"] < (
+        arms["real_text_n16"]["holdout_k0_linear_leakage_fro"]
+    )
+
+    pb = res["part_b_wire_dialect_readout_bridge"]
+    assert pb["linear_probe_val_acc"] > pb["base_unadapted_readout"]["val_readout_acc"]
+    assert (
+        pb["seeded_noise_int4_int8_readout"]["val_mean_class_margin"]
+        > pb["base_unadapted_readout"]["val_mean_class_margin"]
+    )
+    assert pb["seeded_noise_int4_int8_readout"]["holdout_k0_linear_leakage_fro"] < (
+        pb["naive_int4_int8_readout"]["holdout_k0_linear_leakage_fro"] * 0.50
+    )
+    assert pb["hybrid_noise_plus_16_y0_int4_int8_readout"]["holdout_k0_linear_leakage_fro"] < (
+        pb["seeded_noise_int4_int8_readout"]["holdout_k0_linear_leakage_fro"]
+    )
+    assert pb["rollback_max_abs_logit_diff"] == 0.0
+    if res["checkpoint_source"].startswith("pretrained_safetensors:"):
+        assert pb["linear_probe_val_acc"] == 1.0
+        assert pb["seeded_noise_int4_int8_readout"]["val_readout_acc"] == 1.0
+        assert pb["hybrid_noise_plus_16_y0_int4_int8_readout"]["val_readout_acc"] == 1.0
+        assert pb["hybrid_noise_plus_16_y0_int4_int8_readout"]["holdout_k0_top1_retained"] >= 12
+
+    pc = res["part_c_slab_wire_container"]
+    assert pc["c_proj_verify_ok"] is True
+    assert pc["c_proj_roundtrip_and_zero_byte_exact"] is True
+    assert pc["zone_manifest_drift_rejected"] is True
+    assert pc["c_proj_savings_vs_gguf_pct"] > 25.0
+    assert pc["scale_4b_savings_vs_gguf_pct"] > 65.0
+    assert pc["scale_4b_roundtrip_exact"] is True
