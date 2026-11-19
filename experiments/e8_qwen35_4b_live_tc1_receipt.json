@@ -1,0 +1,259 @@
+{
+  "schema": "weft-e8-qwen35-4b-multilayer-tangent-receipt/v1",
+  "model": "Qwen3.5-4B-Q8_0.gguf",
+  "architecture": "qwen35",
+  "target_layers": [
+    28,
+    29,
+    30,
+    31
+  ],
+  "rank_per_layer": 8,
+  "effective_4layer_rank": 32,
+  "zero_byte_rederivation_all_12_patches": true,
+  "reversed_pack_order_zero_byte_match": true,
+  "layer_spectra_summary": {
+    "schema": "qwen35-4b-blk28-31-spectra-summary/v1",
+    "layers": [
+      28,
+      29,
+      30,
+      31
+    ],
+    "final_pre_rmsnorm_mean_r0": 62.703345,
+    "r_norms": [
+      62.740422,
+      65.498958,
+      64.250502,
+      58.851399
+    ],
+    "gammas": [
+      6.805068,
+      6.186092,
+      4.709198,
+      2.073155
+    ],
+    "rhos": [
+      17.24481,
+      26.633308,
+      21.047025,
+      37.780445
+    ]
+  },
+  "gguf_adapters": {
+    "corpus": {
+      "sha256": "e59f818f00e729cc533420b4daaa1846917390a3cab266210bc3b749bb81bc69",
+      "bytes": 754848
+    },
+    "weft-eido": {
+      "sha256": "d4840f081d568f270969d0e01f306c62f068a29867eff9ca1143c4c7c6735d03",
+      "bytes": 754848
+    },
+    "formal-verification": {
+      "sha256": "d888ec684e37bca605464a750a6777a385d099aa25e95863441f3ebefd16d6ca",
+      "bytes": 754880
+    }
+  },
+  "cpu_float64_comparison": {
+    "anchor_48_simultaneous_up_leak_fro_old_blk31": 18.557115,
+    "anchor_48_simultaneous_up_leak_fro_new_mean_4l": 0.00063,
+    "tc4_six_permutation_max_logit_diff_f64": 3.552713678800501e-15,
+    "tc4_rollback_max_logit_diff_f64": 0.0,
+    "committed_single_layer_blk31_tc1": {
+      "corpus": {
+        "solo_step0_logprob_shift": 0.02252048,
+        "triple_routed_step0_drift": 0.0,
+        "triple_behavioral_retention_pct": 100.0,
+        "research_page_1_1_step0_drift": 0.2623131,
+        "research_page_1_1_behavioral_retention_pct": 0.0,
+        "linear_scalar_projection_retention_pct": 100.0,
+        "post_rmsnorm_functional_retention_pct": 100.0,
+        "crosstalk_to_solo_post_wdown_ratio": 0.0,
+        "sum_per_layer_tangent_shrinkage_s": 0.00034306,
+        "final_rmsnorm_radial_coord_c": -0.00765926,
+        "final_rmsnorm_pure_tangent_shrinkage_s": 0.00034306,
+        "final_rmsnorm_identity_l2_error": 2.3650933097325166e-14
+      },
+      "weft-eido": {
+        "solo_step0_logprob_shift": 0.00205755,
+        "triple_routed_step0_drift": 0.06072706,
+        "triple_behavioral_retention_pct": 0.0,
+        "research_page_1_1_step0_drift": 0.33113346,
+        "research_page_1_1_behavioral_retention_pct": 0.0,
+        "linear_scalar_projection_retention_pct": 99.85,
+        "post_rmsnorm_functional_retention_pct": 54.85,
+        "crosstalk_to_solo_post_wdown_ratio": 0.505651,
+        "sum_per_layer_tangent_shrinkage_s": 0.00011549,
+        "final_rmsnorm_radial_coord_c": -0.00032322,
+        "final_rmsnorm_pure_tangent_shrinkage_s": 0.00011549,
+        "final_rmsnorm_identity_l2_error": 3.652619134791644e-14
+      },
+      "formal-verification": {
+        "solo_step0_logprob_shift": 0.16820013,
+        "triple_routed_step0_drift": 0.0,
+        "triple_behavioral_retention_pct": 100.0,
+        "research_page_1_1_step0_drift": 0.00872414,
+        "research_page_1_1_behavioral_retention_pct": 94.81,
+        "linear_scalar_projection_retention_pct": 100.0,
+        "post_rmsnorm_functional_retention_pct": 100.0,
+        "crosstalk_to_solo_post_wdown_ratio": 0.0,
+        "sum_per_layer_tangent_shrinkage_s": 0.00268025,
+        "final_rmsnorm_radial_coord_c": 0.01087545,
+        "final_rmsnorm_pure_tangent_shrinkage_s": 0.00268025,
+        "final_rmsnorm_identity_l2_error": 2.272700137491589e-14
+      }
+    },
+    "tangent_4layer_blk28_31_tc1": {
+      "corpus": {
+        "solo_step0_logprob_shift": 0.05240901,
+        "triple_routed_step0_drift": 0.0,
+        "triple_behavioral_retention_pct": 100.0,
+        "research_page_1_1_step0_drift": 0.05835461,
+        "research_page_1_1_behavioral_retention_pct": 0.0,
+        "linear_scalar_projection_retention_pct": 100.0,
+        "post_rmsnorm_functional_retention_pct": 100.0,
+        "crosstalk_to_solo_post_wdown_ratio": 0.0,
+        "sum_per_layer_tangent_shrinkage_s": 8.706e-05,
+        "final_rmsnorm_radial_coord_c": -0.00032257,
+        "final_rmsnorm_pure_tangent_shrinkage_s": 0.00011783,
+        "final_rmsnorm_identity_l2_error": 2.7839528622690745e-14
+      },
+      "weft-eido": {
+        "solo_step0_logprob_shift": 0.23701267,
+        "triple_routed_step0_drift": 0.01135127,
+        "triple_behavioral_retention_pct": 95.21,
+        "research_page_1_1_step0_drift": 0.10934623,
+        "research_page_1_1_behavioral_retention_pct": 53.86,
+        "linear_scalar_projection_retention_pct": 99.72,
+        "post_rmsnorm_functional_retention_pct": 74.03,
+        "crosstalk_to_solo_post_wdown_ratio": 0.258983,
+        "sum_per_layer_tangent_shrinkage_s": 1.829e-05,
+        "final_rmsnorm_radial_coord_c": -8.859e-05,
+        "final_rmsnorm_pure_tangent_shrinkage_s": 2.768e-05,
+        "final_rmsnorm_identity_l2_error": 2.6766316049401385e-14
+      },
+      "formal-verification": {
+        "solo_step0_logprob_shift": 0.23698079,
+        "triple_routed_step0_drift": 0.0,
+        "triple_behavioral_retention_pct": 100.0,
+        "research_page_1_1_step0_drift": 0.09768799,
+        "research_page_1_1_behavioral_retention_pct": 58.78,
+        "linear_scalar_projection_retention_pct": 100.0,
+        "post_rmsnorm_functional_retention_pct": 100.0,
+        "crosstalk_to_solo_post_wdown_ratio": 0.0,
+        "sum_per_layer_tangent_shrinkage_s": 0.00031224,
+        "final_rmsnorm_radial_coord_c": -0.00117316,
+        "final_rmsnorm_pure_tangent_shrinkage_s": 0.00048051,
+        "final_rmsnorm_identity_l2_error": 2.2801397176513587e-14
+      }
+    }
+  },
+  "live_llama_server_0_5_0": {
+    "schema": "weft-tangent4l-live-llama-server-receipt/v1",
+    "elapsed_seconds": 24.177,
+    "committed_single_layer_blk31": {
+      "boot_ms": 1096.11,
+      "rss_mib": 4598.56,
+      "tc1_by_domain": {
+        "corpus": {
+          "base_text": "\n\n<think>\nThinking Process:\n\n1.  **Analyze the Request:**",
+          "solo_text": "\n\n<think>\nThinking Process:\n\n1.  **Analyze the Request:**",
+          "triple_text": "\n\n<think>\nThinking Process:\n\n1.  **Analyze the Request:**",
+          "research_page_text": "\n\n<think>\nThinking Process:\n\n1.  **Analyze the Request:**",
+          "solo_step0_logprob_shift": 0.02351606,
+          "paired_step0_drift_from_solo": 0.0,
+          "triple_step0_drift_from_solo": 0.0,
+          "research_page_1_1_drift_from_solo": 0.26581962,
+          "paired_live_step0_retention_pct": 100.0,
+          "triple_live_step0_retention_pct": 100.0,
+          "research_page_live_step0_retention_pct": 0.0
+        },
+        "weft-eido": {
+          "base_text": "\nThen, write a test suite using Jest that verifies the function works correctly for",
+          "solo_text": "\nThen, write a test suite using Jest that verifies the function works correctly for",
+          "triple_text": "\nThen, write a test suite using Jest that verifies the function works correctly for",
+          "research_page_text": " Then, write a test suite using Jest.\n\n```javascript\n// clamp0",
+          "solo_step0_logprob_shift": 0.00192213,
+          "paired_step0_drift_from_solo": 0.0,
+          "triple_step0_drift_from_solo": 0.06107306,
+          "research_page_1_1_drift_from_solo": 0.32972574,
+          "paired_live_step0_retention_pct": 100.0,
+          "triple_live_step0_retention_pct": 0.0,
+          "research_page_live_step0_retention_pct": 0.0
+        },
+        "formal-verification": {
+          "base_text": "\n\n<think>\n\n</think>\n\n```lean4\ntheorem add_z (n : Nat",
+          "solo_text": "\n\n<think>\nThinking Process:\n\n1.  **Analyze the Request:**",
+          "triple_text": "\n\n<think>\nThinking Process:\n\n1.  **Analyze the Request:**",
+          "research_page_text": "\n\n<think>\nThinking Process:\n\n1.  **Analyze the Request:**",
+          "solo_step0_logprob_shift": 0.1797455,
+          "paired_step0_drift_from_solo": 0.0,
+          "triple_step0_drift_from_solo": 0.0,
+          "research_page_1_1_drift_from_solo": 0.00748909,
+          "paired_live_step0_retention_pct": 100.0,
+          "triple_live_step0_retention_pct": 100.0,
+          "research_page_live_step0_retention_pct": 95.83
+        }
+      },
+      "min_triple_live_step0_retention_pct": 0.0,
+      "rollback_max_logprob_diff": 0.0,
+      "rollback_elapsed_ms": 331.65,
+      "anchors_24_top1_retained": 20,
+      "anchors_24_max_step0_shift": 0.68529141
+    },
+    "tangent_4layer_blk28_31": {
+      "boot_ms": 1084.65,
+      "rss_mib": 4602.12,
+      "tc1_by_domain": {
+        "corpus": {
+          "base_text": "\n\n<think>\nThinking Process:\n\n1.  **Analyze the Request:**",
+          "solo_text": "\n\n<think>\nThinking Process:\n\n1.  **Analyze the Request:**",
+          "triple_text": "\n\n<think>\nThinking Process:\n\n1.  **Analyze the Request:**",
+          "research_page_text": "\n\n<think>\nThinking Process:\n\n1.  **Analyze the Request:**",
+          "solo_step0_logprob_shift": 0.01514047,
+          "paired_step0_drift_from_solo": 0.0,
+          "triple_step0_drift_from_solo": 0.0,
+          "research_page_1_1_drift_from_solo": 0.00976297,
+          "paired_live_step0_retention_pct": 100.0,
+          "triple_live_step0_retention_pct": 100.0,
+          "research_page_live_step0_retention_pct": 35.52
+        },
+        "weft-eido": {
+          "base_text": "\nThen, write a test suite using Jest that verifies the function works correctly for",
+          "solo_text": "\nThen, write a test suite using Jest that verifies the function works correctly for",
+          "triple_text": "\nThen, write a test suite using Jest that verifies the function works correctly for",
+          "research_page_text": "\nThen, write a test suite using Jest that verifies the function works correctly for",
+          "solo_step0_logprob_shift": 0.06736922,
+          "paired_step0_drift_from_solo": 0.0,
+          "triple_step0_drift_from_solo": 0.00624752,
+          "research_page_1_1_drift_from_solo": 0.04325056,
+          "paired_live_step0_retention_pct": 100.0,
+          "triple_live_step0_retention_pct": 90.73,
+          "research_page_live_step0_retention_pct": 35.8
+        },
+        "formal-verification": {
+          "base_text": "\n\n<think>\n\n</think>\n\n```lean4\ntheorem add_z (n : Nat",
+          "solo_text": "\n\n<think>\n\n</think>\n\n```lean4\ntheorem add_z (n : Nat",
+          "triple_text": "\n\n<think>\n\n</think>\n\n```lean4\ntheorem add_z (n : Nat",
+          "research_page_text": "\n\n<think>\n\n</think>\n\n```lean4\ntheorem add_z (n : Nat",
+          "solo_step0_logprob_shift": 0.06250888,
+          "paired_step0_drift_from_solo": 0.0,
+          "triple_step0_drift_from_solo": 0.0,
+          "research_page_1_1_drift_from_solo": 0.01098984,
+          "paired_live_step0_retention_pct": 100.0,
+          "triple_live_step0_retention_pct": 100.0,
+          "research_page_live_step0_retention_pct": 82.42
+        }
+      },
+      "min_triple_live_step0_retention_pct": 90.73,
+      "rollback_max_logprob_diff": 0.0,
+      "rollback_elapsed_ms": 346.24,
+      "anchors_24_top1_retained": 24,
+      "anchors_24_max_step0_shift": 0.01258123
+    },
+    "tc4_live_reversed_mount_order": {
+      "exact_16_token_text_match": true,
+      "max_logprob_trajectory_diff": 0.00046181678771972656
+    }
+  }
+}
