@@ -135,6 +135,26 @@ def _no_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return out
 
 
+def _reject_constant(name: str) -> Any:
+    raise SafetensorsHeaderError("BAD_JSON", f"{name} is not valid JSON")
+
+
+def _reject_lone_surrogates(value: Any) -> None:
+    """Reject any string, key or value, holding an unpaired UTF-16 surrogate."""
+    stack = [value]
+    while stack:
+        item = stack.pop()
+        if isinstance(item, str):
+            if any(0xD800 <= ord(ch) <= 0xDFFF for ch in item):
+                raise SafetensorsHeaderError("BAD_JSON", "unpaired surrogate in a string")
+        elif isinstance(item, dict):
+            for key, val in item.items():
+                stack.append(key)
+                stack.append(val)
+        elif isinstance(item, list):
+            stack.extend(item)
+
+
 def _is_int(value: Any) -> bool:
     return isinstance(value, int) and not isinstance(value, bool)
 
@@ -169,21 +189,27 @@ _DTYPE_BITS: dict[str, int] = {
 def _tensor_nbytes(dtype: str, shape: list[int]) -> int:
     """Byte length the safetensors format requires for this dtype and shape.
 
-    A zero dimension makes the tensor empty. Any other shape must fill a whole
-    number of bytes, and that count is what ``data_offsets`` has to span.
+    The product of the non-zero dimensions, in bits, must stay below 2**62.
+    That also rejects any dimension too large for an unsigned 64-bit integer,
+    and it applies even when another dimension is zero. A zero dimension then
+    makes the tensor empty. Any other shape must
+    fill a whole number of bytes, and that count is what ``data_offsets`` has
+    to span.
     """
     bits = _DTYPE_BITS.get(dtype)
     if bits is None:
         raise SafetensorsHeaderError("BAD_DTYPE", f"dtype {dtype!r} is not a safetensors type")
-    if any(dim == 0 for dim in shape):
-        return 0
     nbits = bits
     for dim in shape:
+        if dim == 0:
+            continue
         if nbits > (1 << 62) or dim > (1 << 62) // nbits:
             raise SafetensorsHeaderError(
                 "BYTE_SIZE_OVERFLOW", f"shape {shape} overflows for dtype {dtype}"
             )
         nbits *= dim
+    if any(dim == 0 for dim in shape):
+        return 0
     if nbits % 8 != 0:
         raise SafetensorsHeaderError(
             "MISALIGNED",
@@ -270,7 +296,12 @@ def read_safetensors_header(path: Path) -> tuple[dict[str, Any], int]:
         if len(hdr_raw) != header_len:
             raise ValueError(f"Truncated safetensors JSON header: {path.name}")
         file_len = os.fstat(f.fileno()).st_size
-    header = json.loads(hdr_raw.decode("utf-8"), object_pairs_hook=_no_duplicate_keys)
+    header = json.loads(
+        hdr_raw.decode("utf-8"),
+        object_pairs_hook=_no_duplicate_keys,
+        parse_constant=_reject_constant,
+    )
+    _reject_lone_surrogates(header)
     if not isinstance(header, dict):
         raise ValueError("Safetensors header must be a JSON object.")
     _validate_tensor_table(header, file_len - 8 - header_len)

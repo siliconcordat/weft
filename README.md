@@ -55,7 +55,7 @@ WEFT_LIVE_BASE_GGUF=/path/to/qwen2.5-1.5b-instruct.gguf .venv/bin/python experim
 .venv/bin/python experiments/e8_swiglu_rmsnorm_tangent_coupling.py
 ```
 
-Status: v0.1 core compiler (with asymmetric `INT4`/`INT8`/`F16` packing, `weft-slab/v0.1` containers, and multi-layer symmetric `TangentBetaEdit`), `llama.cpp`-verified GGUF v3 F16 LoRA codec, five-layer binding, anti-Goodhart anchor harness, 89 tests, and Experiments E1 to E8 are verified locally. For E8 that covers Parts A and B only, and Part C is an unverified `source claim`.
+Status: v0.1 core compiler (with asymmetric `INT4`/`INT8`/`F16` packing, `weft-slab/v0.1` containers, and multi-layer symmetric `TangentBetaEdit`), `llama.cpp`-verified GGUF v3 F16 LoRA codec, five-layer binding, anti-Goodhart anchor harness, 104 tests, and Experiments E1 to E8 are verified locally. For E8 that covers Parts A and B only, and Part C is an unverified `source claim`.
 
 Experiment E6 verifies simultaneous multi-LoRA serving and `0.99 ms` bit-exact rollback inside live `llama-server` on `Qwen2.5-1.5B-Instruct`, Experiment E7 verifies Latent Lattice capability banks and atomic multi-bank rollback, and Experiment E8 verifies exact SwiGLU/RMSNorm finite-perturbation coupling and multi-layer symmetric `TangentBetaEdit` on a synthetic CPU `float64` stack.
 

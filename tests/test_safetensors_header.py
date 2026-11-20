@@ -201,6 +201,53 @@ def test_dtype_and_shape_must_fill_the_span(tmp_path: Path) -> None:
     _accepts(tmp_path, '{"a":' + _entry([0, 10**9], 0, 0, dtype="F64") + "}", 0)
 
 
+@pytest.mark.parametrize(
+    "shape",
+    [
+        [4294967296, 4294967296, 0],
+        [4294967296, 0, 4294967296],
+        [0, 4294967296, 4294967296],
+        [4294967296, 4294967296, 1, 0],
+    ],
+)
+def test_overflowing_product_with_zero_dimension_rejected(tmp_path: Path, shape: list[int]) -> None:
+    # The overflow in the non-zero dimensions is not erased by a zero elsewhere.
+    _rejects(tmp_path, '{"a":' + _entry(shape, 0, 0, dtype="U8") + "}", 0, "BYTE_SIZE_OVERFLOW")
+    _accepts(tmp_path, '{"a":' + _entry([65536, 65536, 0], 0, 0, dtype="U8") + "}", 0)
+
+
+@pytest.mark.parametrize("shape", [[0, 2**64], [2**64, 0], [0, 2**64 + 5]])
+def test_dimension_above_u64_with_zero_dimension_rejected(tmp_path: Path, shape: list[int]) -> None:
+    _rejects(tmp_path, '{"a":' + _entry(shape, 0, 0) + "}", 0, "BYTE_SIZE_OVERFLOW")
+    _accepts(tmp_path, '{"a":' + _entry([0, 2**32], 0, 0) + "}", 0)
+
+
+def _with_note(note: str, key: str = "a") -> str:
+    return '{"%s":{"dtype":"U8","shape":[8],"data_offsets":[0,8],"note":%s}}' % (key, note)
+
+
+@pytest.mark.parametrize("constant", ["NaN", "Infinity", "-Infinity"])
+def test_json_constant_in_ignored_field_rejected(tmp_path: Path, constant: str) -> None:
+    _accepts(tmp_path, _with_note("1.5"), 8)
+    _rejects(tmp_path, _with_note(constant), 8, "BAD_JSON")
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        _with_note("1", key="\\ud800"),
+        _with_note('"\\udc00"'),
+        _with_note('["\\ud83d"]'),
+        _with_note('{"k":"x\\ud800"}'),
+        '{"__metadata__":{"k":"\\ud800x"},"a":' + _entry([8], 0, 8) + "}",
+    ],
+)
+def test_unpaired_surrogate_rejected(tmp_path: Path, text: str) -> None:
+    _rejects(tmp_path, text, 8, "BAD_JSON")
+    # A valid pair is one character and stays accepted.
+    _accepts(tmp_path, _with_note('"\\ud83d\\ude00"'), 8)
+
+
 def test_identify_checkpoint_and_verify_binding_fail_closed(tmp_path: Path) -> None:
     ck = tmp_path / "ck"
     ck.mkdir()
