@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import struct
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -113,8 +114,89 @@ def sha256_file(path: Path) -> str:
     return h.hexdigest()
 
 
+class SafetensorsHeaderError(ValueError):
+    """A safetensors header the format does not allow.
+
+    ``code`` is a stable machine-readable reason. The message starts with it.
+    """
+
+    def __init__(self, code: str, detail: str) -> None:
+        super().__init__(f"{code}: {detail}")
+        self.code = code
+        self.detail = detail
+
+
+def _no_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in out:
+            raise SafetensorsHeaderError("DUPLICATE_KEY", f"key {key!r} appears twice")
+        out[key] = value
+    return out
+
+
+def _is_int(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _validate_tensor_table(header: dict[str, Any], data_len: int) -> None:
+    """Check shapes, offsets and the byte layout the format requires.
+
+    Tensor spans, taken in offset order, must start at 0, follow each other
+    with no gap and no overlap, and end exactly at the end of the data area.
+    Empty tensors (zero-length spans) are allowed.
+    """
+    spans: list[tuple[int, int, str]] = []
+    for name, meta in header.items():
+        if name == "__metadata__":
+            if not isinstance(meta, dict) or not all(
+                isinstance(k, str) and isinstance(v, str) for k, v in meta.items()
+            ):
+                raise SafetensorsHeaderError(
+                    "BAD_METADATA", "__metadata__ must map strings to strings"
+                )
+            continue
+        if not isinstance(meta, dict):
+            raise SafetensorsHeaderError("BAD_ENTRY", f"entry {name!r} must be an object")
+        if not isinstance(meta.get("dtype"), str):
+            raise SafetensorsHeaderError("BAD_ENTRY", f"dtype of {name!r} must be a string")
+        shape = meta.get("shape")
+        if not isinstance(shape, list) or not all(_is_int(d) and d >= 0 for d in shape):
+            raise SafetensorsHeaderError(
+                "BAD_SHAPE", f"shape of {name!r} must be a list of non-negative integers"
+            )
+        offsets = meta.get("data_offsets")
+        if (
+            not isinstance(offsets, list)
+            or len(offsets) != 2
+            or not all(_is_int(o) and o >= 0 for o in offsets)
+            or offsets[1] < offsets[0]
+        ):
+            raise SafetensorsHeaderError(
+                "BAD_OFFSETS", f"data_offsets of {name!r} must be two ordered non-negative integers"
+            )
+        spans.append((offsets[0], offsets[1], name))
+
+    cursor = 0
+    for lo, hi, name in sorted(spans):
+        if lo < cursor:
+            raise SafetensorsHeaderError("OVERLAPPING_SPANS", f"{name!r} starts at {lo}, before {cursor}")
+        if lo > cursor:
+            raise SafetensorsHeaderError("GAP_BETWEEN_SPANS", f"bytes {cursor}..{lo} belong to no tensor")
+        cursor = hi
+    if cursor < data_len:
+        raise SafetensorsHeaderError("GAP_BETWEEN_SPANS", f"bytes {cursor}..{data_len} belong to no tensor")
+    if cursor > data_len:
+        raise SafetensorsHeaderError("TRUNCATED_DATA", f"spans end at {cursor}, data area is {data_len}")
+
+
 def read_safetensors_header(path: Path) -> tuple[dict[str, Any], int]:
-    """Read Safetensors JSON header and return (header_dict, data_start_offset)."""
+    """Read Safetensors JSON header and return (header_dict, data_start_offset).
+
+    Rejects headers the safetensors format disallows, with a
+    ``SafetensorsHeaderError`` (a ``ValueError``): duplicate keys, non-integer
+    shapes, overlapping spans, and bytes that belong to no tensor.
+    """
     with open(path, "rb") as f:
         len_bytes = f.read(8)
         if len(len_bytes) != 8:
@@ -125,9 +207,11 @@ def read_safetensors_header(path: Path) -> tuple[dict[str, Any], int]:
         hdr_raw = f.read(header_len)
         if len(hdr_raw) != header_len:
             raise ValueError(f"Truncated safetensors JSON header: {path.name}")
-    header = json.loads(hdr_raw.decode("utf-8"))
+        file_len = os.fstat(f.fileno()).st_size
+    header = json.loads(hdr_raw.decode("utf-8"), object_pairs_hook=_no_duplicate_keys)
     if not isinstance(header, dict):
         raise ValueError("Safetensors header must be a JSON object.")
+    _validate_tensor_table(header, file_len - 8 - header_len)
     return header, 8 + header_len
 
 
