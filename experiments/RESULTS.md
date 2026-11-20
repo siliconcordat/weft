@@ -265,7 +265,9 @@ Scope (`verified` on a deterministic CPU `float64` 4-layer pre-norm SwiGLU + `W_
 
 ### Part A: Exact finite-perturbation `RMSNorm` identity, rational sandwich, and `1/L` multi-layer law
 
-Decomposing any hidden perturbation `delta = c * h0 + delta_perp` with `c = <delta, h0> / ||h0||_2^2`, `<delta_perp, h0> = 0`, `R0 = sqrt(||h0||_2^2 + d * eps)`, and `q = R0 / sqrt(||h0 + delta||_2^2 + d * eps)` yields the exact identity `RMSNorm(h0 + delta) - RMSNorm(h0) = q * T(h0) delta_perp + ((1 + c) * q - 1) * RMSNorm(h0)` (`L2` reconstruction error `2.73e-15`). Even for a purely tangent perturbation (`c = 0`, `eta = ||delta_perp||_2^2 / R0^2`), `RMSNorm` shrinks base logits by `s(eta) = eta / (sqrt(1 + eta) * (1 + sqrt(1 + eta)))`, bounded for all `eta >= 0` by `eta / (2 * (1 + eta)) <= s(eta) <= eta / 2`. Projecting `u` orthogonal to the unit direction of `a(x) = g(x) * (W_down^T h0)` forces `<W_down(g(x) * u_perp), h0> = 0` to `3.57e-14`.
+Decomposing any hidden perturbation `delta = c * h0 + delta_perp` with `c = <delta, h0> / ||h0||_2^2`, `<delta_perp, h0> = 0`, `R0 = sqrt(||h0||_2^2 + d * eps)`, and `q = R0 / sqrt(||h0 + delta||_2^2 + d * eps)` yields the exact identity `RMSNorm(h0 + delta) - RMSNorm(h0) = q * T(h0) delta_perp + ((1 + c) * q - 1) * RMSNorm(h0)` (`L2` reconstruction error `<= 1e-13`). Even for a purely tangent perturbation (`c = 0`, `eta = ||delta_perp||_2^2 / R0^2`), `RMSNorm` shrinks base logits by `s(eta) = eta / (sqrt(1 + eta) * (1 + sqrt(1 + eta)))`, bounded for all `eta >= 0` by `eta / (2 * (1 + eta)) <= s(eta) <= eta / 2`. Projecting `u` orthogonal to the unit direction of `a(x) = g(x) * (W_down^T h0)` forces `<W_down(g(x) * u_perp), h0> = 0` to within `1e-13`.
+
+Measured values move at the ULP level with the BLAS kernel. The reconstruction error was `2.73e-15` on the author's host and `2.18e-15` on x86_64 OpenBLAS, and the radial dot product was `3.57e-14` and `1.87e-14`. The E8 Part B 6-permutation diff measured `2.7e-15` to `3.6e-15` across BLAS kernels.
 
 | Layer Split (`L`) | Per-Layer `eta` | Cumulative Exact `L * s(eta_L)` | Rational Lower Bound | Quadratic Upper Bound |
 | --- | --- | --- | --- | --- |
@@ -289,11 +291,15 @@ Key findings:
 
 - Right-singular scalar projection (`arm1`) exceeds `1.0` (`100%` capped) because sibling `B_other` columns sit orthogonal to `B_solo`, yet `0.2 * corpus` and `1.0 * formal-verification` collapse live `weft-eido` `step0` retention to `19.4%` and `0.0%`.
 - Sequential `commit_patch` (`arm2`) depends on compilation order (`Frobenius` diff `1.4489` when pack order reverses): `formal-verification` committed after `weft-eido` avoids `weft-eido` (`83.6%`), while `corpus` committed before `weft-eido` still overwrites it (`24.2%`).
-- Four-layer symmetric `TangentBetaEdit` (`arm4`) enforces trace-balanced bidirectional sibling preservation and worst-case per-state radial `eta` caps, raising `[0.2, 1.0, 0.0]` `step0` retention to `99.86%` and `[0.0, 1.0, 1.0]` retention to `96.41%`, cutting cross-talk `446x` (`0.8578 -> 0.0019`), cutting cumulative radial shrinkage `19.1x` vs `arm1` and `2.20x` vs single-layer `arm3`, retaining `24/24` anchors, and passing 0-byte re-derivation, reversed compile-order parity (`true`), 6-permutation load-order invariance (`2.8e-15`), and `O(1)` rollback (`0.0`).
+- Four-layer symmetric `TangentBetaEdit` (`arm4`) enforces trace-balanced bidirectional sibling preservation and worst-case per-state radial `eta` caps, raising `[0.2, 1.0, 0.0]` `step0` retention to `99.86%` and `[0.0, 1.0, 1.0]` retention to `96.41%`, cutting cross-talk `446x` (`0.8578 -> 0.0019`), cutting cumulative radial shrinkage `19.1x` vs `arm1` and `2.20x` vs single-layer `arm3`, retaining `24/24` anchors, and passing 0-byte re-derivation, reversed compile-order parity (`true`), 6-permutation load-order invariance (`<= 1e-13`), and `O(1)` rollback (`0.0`).
 
-### Part C: Live `llama-server 0.5.0` verification on `Qwen3.5-4B-Q8_0` (`blk.28..31`, rank 8)
+### Part C: Live `llama-server 0.5.0` run on `Qwen3.5-4B-Q8_0` (`blk.28..31`, rank 8): UNVERIFIED (`source claim`)
 
-Scope (`verified` locally in `experiments/e8_qwen35_4b_live_tc1_receipt.json` on `Qwen3.5-4B-Q8_0.gguf` inside `llama-server` `0.5.0`, `temperature = 0.0`, `top_p = 1.0`, `seed = 42`, `cache_prompt = False`, `POST /slots/0?action=erase`, `12/12` layer factor pairs passing CPU `float64` 0-byte re-derivation and reversed pack-order parity):
+> **Status: unverified (`source claim`).** Part C is not reproducible from this repository. Its numbers rest only on the hand-committed receipt `experiments/e8_qwen35_4b_live_tc1_receipt.json`. The generator script, run command, activation harvests and base-GGUF sha256 are not committed, and the run used an Apple Metal GPU.
+>
+> Independent re-runs (2026-11-19) reproduced Parts A and B but could not check Part C. Treat every Part C value as a source claim until a re-runnable script and the base-model hash are committed.
+
+Scope (`source claim`, recorded in `experiments/e8_qwen35_4b_live_tc1_receipt.json` on `Qwen3.5-4B-Q8_0.gguf` inside `llama-server` `0.5.0`, `temperature = 0.0`, `top_p = 1.0`, `seed = 42`, `cache_prompt = False`, `POST /slots/0?action=erase`, `12/12` layer factor pairs passing CPU `float64` 0-byte re-derivation and reversed pack-order parity):
 
 | Live `Qwen3.5-4B-Q8_0` Check | Single-Layer `blk.31` | 4-Layer `TangentBetaEdit` (`blk.28..31`) |
 | --- | --- | --- |
