@@ -45,6 +45,14 @@ class BetaEditConfig:
     quant_dtype: QuantDtype = "bf16"
     b_quant_dtype: Optional[QuantDtype] = None
     a_quant_dtype: Optional[QuantDtype] = None
+    # Reproducibility contract:
+    # - True: every float64 product goes through `ozaki_exact_matmul` (exact integer limbs),
+    #   so raw factors, f32/f16 bytes, digests and certificates are bit-identical across BLAS
+    #   kernels and thread counts (pinned by tests/test_cross_isa_golden.py). Cost is a
+    #   Python-level O(d^3) with a large constant (roughly 13x legacy at d=512).
+    # - False (legacy): uses BLAS `@`/LAPACK, so float64 results and f32 bytes vary with the
+    #   BLAS kernel and thread count. Only reproducible with pinned BLAS and threads
+    #   (e.g. OPENBLAS_NUM_THREADS=1) on a single host.
     cross_isa_deterministic: bool = False
 
     @property
