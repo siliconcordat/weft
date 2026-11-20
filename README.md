@@ -36,7 +36,7 @@ Weft enforces five hard vetoes inherited from Model Domain Expansion research:
 
 - [ARCHITECTURE.md](ARCHITECTURE.md): Two-class adapter policy, three-pack composition, verification primitive, and hardware layout.
 - [PLAN.md](PLAN.md): Phased build milestones, test suite, runnable experiments, and kill criteria.
-- [experiments/RESULTS.md](experiments/RESULTS.md): Verbatim measured outputs from Experiments E1 to E7, including failure boundaries, live `llama-server` results, and Latent Lattice MDE probes.
+- [experiments/RESULTS.md](experiments/RESULTS.md): Verbatim measured outputs from Experiments E1 to E8, including failure boundaries, live `llama-server` results, Latent Lattice MDE probes, and multi-layer SwiGLU/RMSNorm tangent projection.
 
 ## Quickstart
 
@@ -52,11 +52,14 @@ python3 -m venv .venv
 # Opt-in live 1.5B llama-server multi-LoRA check:
 WEFT_LIVE_BASE_GGUF=/path/to/qwen2.5-1.5b-instruct.gguf .venv/bin/python experiments/e6_live_llama_server_lora.py
 .venv/bin/python experiments/e7_latent_lattice_mde.py
+.venv/bin/python experiments/e8_swiglu_rmsnorm_tangent_coupling.py
 ```
 
-Status: v0.1 core compiler (with asymmetric `INT4`/`INT8`/`F16` packing and `weft-slab/v0.1` containers), `llama.cpp`-verified GGUF v3 F16 LoRA codec, five-layer binding, anti-Goodhart anchor harness, 40 tests, and Experiments E1 to E7 are verified locally.
+Status: v0.1 core compiler (with asymmetric `INT4`/`INT8`/`F16` packing, `weft-slab/v0.1` containers, and multi-layer symmetric `TangentBetaEdit`), `llama.cpp`-verified GGUF v3 F16 LoRA codec, five-layer binding, anti-Goodhart anchor harness, 58 tests, and Experiments E1 to E8 are verified locally. For E8 that covers Parts A and B only, and Part C is an unverified `source claim`.
 
-Experiment E6 verifies simultaneous multi-LoRA serving and `0.99 ms` bit-exact rollback inside live `llama-server` on `Qwen2.5-1.5B-Instruct`, and Experiment E7 verifies Latent Lattice capability banks, KV-write contamination rollback, and asymmetric conditioning. Full SOP behavioral benchmarks on 1.7B to 27B instruct checkpoints remain Milestone 3. Claims carry explicit labels (`verified`, `source claim`, or `proposed`).
+Experiment E6 verifies simultaneous multi-LoRA serving and `0.99 ms` bit-exact rollback inside live `llama-server` on `Qwen2.5-1.5B-Instruct`, Experiment E7 verifies Latent Lattice capability banks and atomic multi-bank rollback, and Experiment E8 verifies exact SwiGLU/RMSNorm finite-perturbation coupling and multi-layer symmetric `TangentBetaEdit` on a synthetic CPU `float64` stack.
+
+The live `Qwen3.5-4B-Q8_0` E8 Part C numbers are an unverified `source claim`, because no re-runnable script or base-model hash is committed. Claims carry explicit labels (`verified`, `source claim`, or `proposed`).
 
 ## License
 

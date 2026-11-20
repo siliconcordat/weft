@@ -16,6 +16,7 @@ python3 -m venv .venv
 # Opt-in live 1.5B llama-server test (supply any local Qwen2.5-1.5B GGUF path):
 WEFT_LIVE_BASE_GGUF=/path/to/qwen2.5-1.5b-instruct.gguf .venv/bin/python experiments/e6_live_llama_server_lora.py
 .venv/bin/python experiments/e7_latent_lattice_mde.py
+.venv/bin/python experiments/e8_swiglu_rmsnorm_tangent_coupling.py
 ```
 
 ## E1: Shared-token null-space collapse vs register-scoped composition
@@ -257,3 +258,58 @@ Compiling the wide-output horizontal-to-MLP conditioning projection `W_bgate` (`
 `int4 / int8` cuts shared-subspace horizontal-to-vertical leakage 14.42x vs `int4 / int4` and 14.35x vs reversed control `int8 / int4` (matching `int8 / int8` at ratio `0.999`) while cutting bytes 34.8 percent vs `int8 / int8` and 65.9 percent vs `f16 / f16`. `int4 / f16` cuts bytes 53.4 percent vs `bf16 / bf16` with 8.6x lower leakage.
 
 Honest boundary on E7: E7 uses a synthetic 4-layer CPU `float64` Latent Lattice Transformer to isolate exact recurrence, KV-write coupling, rollback, and quantization physics. Pretrained 406M+ LLLM checkpoints are not yet publicly released, so language-modeling perplexity evaluation on trained Lattice weights awaits open checkpoints.
+
+## E8: SwiGLU gate metric, RMSNorm radial shrinkage, and multi-layer `TangentBetaEdit`
+
+Scope (`verified` on a deterministic CPU `float64` 4-layer pre-norm SwiGLU + `W_down` + `RMSNorm` stack, `d_model = 128`, `d_ff = 384`, `n_vocab = 64`, rank-4 F16 adapters across 3 shared-carrier specialists `corpus`, `weft-eido`, and `formal-verification` with unbalanced sample counts `24 / 24 / 48` and 24 held-out `y = 0` anchors).
+
+### Part A: Exact finite-perturbation `RMSNorm` identity, rational sandwich, and `1/L` multi-layer law
+
+Decomposing any hidden perturbation `delta = c * h0 + delta_perp` with `c = <delta, h0> / ||h0||_2^2`, `<delta_perp, h0> = 0`, `R0 = sqrt(||h0||_2^2 + d * eps)`, and `q = R0 / sqrt(||h0 + delta||_2^2 + d * eps)` yields the exact identity `RMSNorm(h0 + delta) - RMSNorm(h0) = q * T(h0) delta_perp + ((1 + c) * q - 1) * RMSNorm(h0)` (`L2` reconstruction error `<= 1e-13`). Even for a purely tangent perturbation (`c = 0`, `eta = ||delta_perp||_2^2 / R0^2`), `RMSNorm` shrinks base logits by `s(eta) = eta / (sqrt(1 + eta) * (1 + sqrt(1 + eta)))`, bounded for all `eta >= 0` by `eta / (2 * (1 + eta)) <= s(eta) <= eta / 2`. Projecting `u` orthogonal to the unit direction of `a(x) = g(x) * (W_down^T h0)` forces `<W_down(g(x) * u_perp), h0> = 0` to within `1e-13`.
+
+Measured values move at the ULP level with the BLAS kernel. The reconstruction error was `2.73e-15` on the author's host and `2.18e-15` on x86_64 OpenBLAS, and the radial dot product was `3.57e-14` and `1.87e-14`. The E8 Part B 6-permutation diff measured `2.7e-15` to `3.6e-15` across BLAS kernels.
+
+| Layer Split (`L`) | Per-Layer `eta` | Cumulative Exact `L * s(eta_L)` | Rational Lower Bound | Quadratic Upper Bound |
+| --- | --- | --- | --- | --- |
+| `L = 1` (single upper block) | 0.126551 | 0.057840 | 0.056168 | 0.063276 |
+| `L = 2` | 0.031638 | 0.030906 | 0.030668 | 0.031638 |
+| `L = 4` (`1/4` per layer) | 0.007909 | 0.015726 | 0.015695 | 0.015819 |
+| `L = 8` (`1/8` per layer) | 0.001977 | 0.007898 | 0.007894 | 0.007909 |
+
+Splitting total tangent norm across `L = 4` blocks cuts the cumulative quadratic upper bound by an exact factor of `1/4` (`0.063276 -> 0.015819`) and exact nonlinear shrinkage by `3.68x` (`0.057840 -> 0.015726`).
+
+### Part B: Resolving the linear subspace-retention illusion with 4-layer symmetric `TangentBetaEdit`
+
+| Composition Arm | Scalar Subspace Retention | Post-`RMSNorm` Functional Retention | `[0.2, 1.0, 0.0]` `step0` Retention | `[0.0, 1.0, 1.0]` `step0` Retention | Cross-talk / Solo Ratio | Anchors Retained | Cum. Layer Shrinkage |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `arm1_single_layer_unsym_betaedit` | 1.1125 (100% cap) | 0.0962 (9.6%) | 0.1940 (19.4%) | 0.0000 (0.0%) | 0.857805 | 24/24 | 0.148217 |
+| `arm2_single_layer_seq_commit_fwd` | 1.0215 (100% cap) | 0.0895 (9.0%) | 0.2420 (24.2%) | 0.8360 (83.6%) | 0.863680 | 23/24 | 0.149588 |
+| `arm3_single_layer_sym_tangent_betaedit` | 0.9996 (99.96%) | 0.9967 (99.67%) | 0.9980 (99.80%) | 0.9849 (98.49%) | 0.003319 | 24/24 | 0.017032 |
+| `arm4_multilayer_4l_sym_tangent_betaedit` | 0.9997 (99.97%) | 0.9981 (99.81%) | 0.9986 (99.86%) | 0.9641 (96.41%) | 0.001921 | 24/24 | 0.007757 |
+
+Key findings:
+
+- Right-singular scalar projection (`arm1`) exceeds `1.0` (`100%` capped) because sibling `B_other` columns sit orthogonal to `B_solo`, yet `0.2 * corpus` and `1.0 * formal-verification` collapse live `weft-eido` `step0` retention to `19.4%` and `0.0%`.
+- Sequential `commit_patch` (`arm2`) depends on compilation order (`Frobenius` diff `1.4489` when pack order reverses): `formal-verification` committed after `weft-eido` avoids `weft-eido` (`83.6%`), while `corpus` committed before `weft-eido` still overwrites it (`24.2%`).
+- Four-layer symmetric `TangentBetaEdit` (`arm4`) enforces trace-balanced bidirectional sibling preservation and worst-case per-state radial `eta` caps, raising `[0.2, 1.0, 0.0]` `step0` retention to `99.86%` and `[0.0, 1.0, 1.0]` retention to `96.41%`, cutting cross-talk `446x` (`0.8578 -> 0.0019`), cutting cumulative radial shrinkage `19.1x` vs `arm1` and `2.20x` vs single-layer `arm3`, retaining `24/24` anchors, and passing 0-byte re-derivation, reversed compile-order parity (`true`), 6-permutation load-order invariance (`<= 1e-13`), and `O(1)` rollback (`0.0`).
+
+### Part C: Live `llama-server 0.5.0` run on `Qwen3.5-4B-Q8_0` (`blk.28..31`, rank 8): UNVERIFIED (`source claim`)
+
+> **Status: unverified (`source claim`).** Part C is not reproducible from this repository. Its numbers rest only on the hand-committed receipt `experiments/e8_qwen35_4b_live_tc1_receipt.json`. The generator script, run command, activation harvests and base-GGUF sha256 are not committed, and the run used an Apple Metal GPU.
+>
+> Independent re-runs (2026-11-19) reproduced Parts A and B but could not check Part C. Treat every Part C value as a source claim until a re-runnable script and the base-model hash are committed.
+
+Scope (`source claim`, recorded in `experiments/e8_qwen35_4b_live_tc1_receipt.json` on `Qwen3.5-4B-Q8_0.gguf` inside `llama-server` `0.5.0`, `temperature = 0.0`, `top_p = 1.0`, `seed = 42`, `cache_prompt = False`, `POST /slots/0?action=erase`, `12/12` layer factor pairs passing CPU `float64` 0-byte re-derivation and reversed pack-order parity):
+
+| Live `Qwen3.5-4B-Q8_0` Check | Single-Layer `blk.31` | 4-Layer `TangentBetaEdit` (`blk.28..31`) |
+| --- | --- | --- |
+| Simultaneous 48-anchor CPU `float64` `up_proj` leak | `18.557115` | `0.000630` (`29,456x` lower) |
+| `formal-verification` per-layer radial shrinkage `sum s` | `0.00268025` | `0.00031224` (`8.58x` lower) |
+| Live `corpus` `T-C1` `[1.0, 0.0, 0.0]` `step0` retention | `100.00%` (`0.0` drift) | `100.00%` (`0.0` drift) |
+| Live `weft-eido` `T-C1` `[0.2, 1.0, 0.0]` `step0` retention | `0.00%` (`0.061073` vs `0.001922`, `31.8x` drift) | `90.73%` (`0.006248` vs `0.067369`, `342x` lower ratio) |
+| Live `formal-verification` `T-C1` `[0.0, 0.0, 1.0]` | `100.00%` (`</think>` destabilized into CoT loop) | `100.00%` (clean `</think>` + `theorem add_z` preserved) |
+| Minimum triple-stack live `step0` retention | `0.00%` | `90.73%` (`>= 90.0%` without subspace fallback) |
+| Live simultaneous `[1.0, 1.0, 1.0]` 24-anchor top-1 | `20/24` (max shift `0.685291`) | `24/24` (max shift `0.012581`, `54.5x` lower) |
+| Live `T-C4` reversed `--lora-scaled` order / rollback | `16/16` tokens / `0.0` | `16/16` tokens (`4.62e-4` F16 diff) / `0.0` |
+
+Live mechanism confirmation: under `enable_thinking: false`, single-layer `blk.31` radial base-logit shrinkage (`s = 0.00268`, `c = +0.01088`) attenuates `</think>` and knocks greedy decoding into `Thinking Process: 1. **Analyze the Request:**`. Splitting across `blk.28..31` (`8.58x` lower per-layer radial shrinkage) preserves clean `</think>` closure and direct Lean 4 theorem output across solo, triple, and simultaneous `[0.0, 1.0, 1.0]` runs.
