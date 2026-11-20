@@ -187,6 +187,20 @@ def test_bad_entry_rejected(tmp_path: Path) -> None:
     _rejects(tmp_path, '{"a":[1,2]}', 8, "BAD_ENTRY")
 
 
+def test_dtype_and_shape_must_fill_the_span(tmp_path: Path) -> None:
+    # F32 is 4 bytes. Two elements fill 8 bytes. One element in those 8 does not.
+    _accepts(tmp_path, '{"a":' + _entry([2], 0, 8, dtype="F32") + "}", 8)
+    _rejects(tmp_path, '{"a":' + _entry([1], 0, 8, dtype="F32") + "}", 8, "BYTE_LENGTH")
+    # A scalar is shape [] and still has a width.
+    _accepts(tmp_path, '{"a":' + _entry([], 0, 4, dtype="F32") + "}", 4)
+    # F4 is 4 bits. Two elements fill one byte. One element does not fill a byte.
+    _accepts(tmp_path, '{"a":' + _entry([2], 0, 1, dtype="F4") + "}", 1)
+    _rejects(tmp_path, '{"a":' + _entry([1], 0, 1, dtype="F4") + "}", 1, "MISALIGNED")
+    _rejects(tmp_path, '{"a":' + _entry([8], 0, 8, dtype="F33") + "}", 8, "BAD_DTYPE")
+    # A zero dimension is empty even when another dimension is large.
+    _accepts(tmp_path, '{"a":' + _entry([0, 10**9], 0, 0, dtype="F64") + "}", 0)
+
+
 def test_identify_checkpoint_and_verify_binding_fail_closed(tmp_path: Path) -> None:
     ck = tmp_path / "ck"
     ck.mkdir()

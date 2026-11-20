@@ -139,6 +139,59 @@ def _is_int(value: Any) -> bool:
     return isinstance(value, int) and not isinstance(value, bool)
 
 
+# Bits per element. Same names and widths as the safetensors format.
+_DTYPE_BITS: dict[str, int] = {
+    "F4": 4,
+    "F6_E2M3": 6,
+    "F6_E3M2": 6,
+    "BOOL": 8,
+    "U8": 8,
+    "I8": 8,
+    "F8_E5M2": 8,
+    "F8_E4M3": 8,
+    "F8_E8M0": 8,
+    "F8_E4M3FNUZ": 8,
+    "F8_E5M2FNUZ": 8,
+    "I16": 16,
+    "U16": 16,
+    "F16": 16,
+    "BF16": 16,
+    "I32": 32,
+    "U32": 32,
+    "F32": 32,
+    "C64": 64,
+    "F64": 64,
+    "I64": 64,
+    "U64": 64,
+}
+
+
+def _tensor_nbytes(dtype: str, shape: list[int]) -> int:
+    """Byte length the safetensors format requires for this dtype and shape.
+
+    A zero dimension makes the tensor empty. Any other shape must fill a whole
+    number of bytes, and that count is what ``data_offsets`` has to span.
+    """
+    bits = _DTYPE_BITS.get(dtype)
+    if bits is None:
+        raise SafetensorsHeaderError("BAD_DTYPE", f"dtype {dtype!r} is not a safetensors type")
+    if any(dim == 0 for dim in shape):
+        return 0
+    nbits = bits
+    for dim in shape:
+        if nbits > (1 << 62) or dim > (1 << 62) // nbits:
+            raise SafetensorsHeaderError(
+                "BYTE_SIZE_OVERFLOW", f"shape {shape} overflows for dtype {dtype}"
+            )
+        nbits *= dim
+    if nbits % 8 != 0:
+        raise SafetensorsHeaderError(
+            "MISALIGNED",
+            f"dtype {dtype} and shape {shape} do not fill a whole number of bytes",
+        )
+    return nbits // 8
+
+
 def _validate_tensor_table(header: dict[str, Any], data_len: int) -> None:
     """Check shapes, offsets and the byte layout the format requires.
 
@@ -175,6 +228,13 @@ def _validate_tensor_table(header: dict[str, Any], data_len: int) -> None:
             raise SafetensorsHeaderError(
                 "BAD_OFFSETS", f"data_offsets of {name!r} must be two ordered non-negative integers"
             )
+        span = offsets[1] - offsets[0]
+        need = _tensor_nbytes(str(meta["dtype"]), shape)
+        if need != span:
+            raise SafetensorsHeaderError(
+                "BYTE_LENGTH",
+                f"{name!r} spans {span} bytes but {meta['dtype']} shape {shape} needs {need}",
+            )
         spans.append((offsets[0], offsets[1], name))
 
     cursor = 0
@@ -195,7 +255,9 @@ def read_safetensors_header(path: Path) -> tuple[dict[str, Any], int]:
 
     Rejects headers the safetensors format disallows, with a
     ``SafetensorsHeaderError`` (a ``ValueError``): duplicate keys, non-integer
-    shapes, overlapping spans, and bytes that belong to no tensor.
+    shapes, a dtype the format does not name, a span whose length disagrees
+    with the dtype and shape, overlapping spans, and bytes that belong to no
+    tensor.
     """
     with open(path, "rb") as f:
         len_bytes = f.read(8)
