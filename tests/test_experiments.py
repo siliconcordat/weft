@@ -12,6 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from experiments.checkpoint_provenance import env_requires_real_weights
 from experiments.e1_shared_token_composition import run_experiment as run_e1
 from experiments.e2_anti_goodhart_gate import run_experiment as run_e2
 from experiments.e3_real_checkpoint_smoke import run_experiment as run_e3
@@ -54,8 +55,23 @@ def test_e2_anti_goodhart_separates_all_six_candidates() -> None:
     assert "forbidden_candidate_supplied_anchors" in c["forged_self_anchor"]["unified_reasons"]
 
 
+def _check_weight_provenance_consistent(res: dict) -> None:
+    prov = res["weights_provenance"]
+    if res["checkpoint_source"] != prov["checkpoint_source"]:
+        raise AssertionError("checkpoint_source disagrees with weights_provenance")
+    if res["is_synthetic_fallback"] is not prov["is_synthetic_fallback"]:
+        raise AssertionError("is_synthetic_fallback disagrees with weights_provenance")
+    if res["real_weights_verified"] is not prov["real_weights_verified"]:
+        raise AssertionError("real_weights_verified disagrees with weights_provenance")
+    if res["is_synthetic_fallback"] and res["real_weights_verified"]:
+        raise AssertionError("synthetic fallback weights cannot be marked real_weights_verified")
+    if env_requires_real_weights() and (res["is_synthetic_fallback"] or not res["real_weights_verified"]):
+        raise AssertionError("WEFT_REQUIRE_REAL_WEIGHTS requires verified real weights")
+
+
 def test_e3_end_to_end_smoke_rederivation_rollback_and_tamper() -> None:
     res = run_e3()
+    _check_weight_provenance_consistent(res)
     assert res["certificate_ok"] is True
     assert res["binding_clean_ok"] is True
     assert res["gguf_roundtrip_and_zero_byte_match"] is True
@@ -70,6 +86,7 @@ def test_e3_end_to_end_smoke_rederivation_rollback_and_tamper() -> None:
 
 def test_e4_asymmetric_quant_packing_beats_uniform_int4_and_reversed_control() -> None:
     res = run_e4()
+    _check_weight_provenance_consistent(res)
     cp = res["c_proj_headline_n3"]
     cf = res["c_fc_headline_n3"]
 
@@ -108,6 +125,7 @@ def test_e4_asymmetric_quant_packing_beats_uniform_int4_and_reversed_control() -
 
 def test_e5_noise_k0_scaling_readout_bridge_and_slab_wire() -> None:
     res = run_e5()
+    _check_weight_provenance_consistent(res)
     assert res["batch_forward_parity_max_diff"] < 1e-11
 
     pa = res["part_a_seeded_noise_k0_curve"]
