@@ -35,6 +35,7 @@ Weft enforces five hard vetoes inherited from Model Domain Expansion research:
 ## Documentation and status
 
 - [ARCHITECTURE.md](ARCHITECTURE.md): Two-class adapter policy, three-pack composition, verification primitive, and hardware layout.
+- [docs/contextual-compute.md](docs/contextual-compute.md): Proposed note on adapters as a session parameter field, still re-derivable from public inputs.
 - [PLAN.md](PLAN.md): Phased build milestones, test suite, runnable experiments, and kill criteria.
 - [experiments/RESULTS.md](experiments/RESULTS.md): Verbatim measured outputs from Experiments E1 to E8, including failure boundaries, live `llama-server` results, Latent Lattice MDE probes, and multi-layer SwiGLU/RMSNorm tangent projection.
 
