@@ -30,12 +30,22 @@ import math
 import os
 import shutil
 import struct
+import sys
 import tempfile
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from experiments.checkpoint_provenance import (
+    RealWeightsRequiredError,
+    discover_tinystories_cache_detailed,
+    resolve_experiment_checkpoint,
+)
 from weft.binding import (
     ADAPTER_CLASS_1,
     RuntimeFlags,
@@ -219,19 +229,7 @@ class SimpleWordTokenizer:
 
 def discover_tinystories_cache() -> tuple[Path | None, Path | None]:
     """Locate cached roneneldan/TinyStories-1M safetensors + config snapshots without hardcoding paths."""
-    hf_home = Path(os.environ.get("HF_HOME", str(Path.home() / ".cache" / "huggingface")))
-    repo_dir = hf_home / "hub" / "models--roneneldan--TinyStories-1M" / "snapshots"
-    if not repo_dir.is_dir():
-        return None, None
-    st_file: Path | None = None
-    cfg_dir: Path | None = None
-    for snap in sorted(repo_dir.iterdir()):
-        if not snap.is_dir():
-            continue
-        if (snap / "model.safetensors").is_file():
-            st_file = (snap / "model.safetensors").resolve()
-        if (snap / "config.json").is_file() and (snap / "vocab.json").is_file():
-            cfg_dir = snap.resolve()
+    st_file, cfg_dir, _ = discover_tinystories_cache_detailed()
     return st_file, cfg_dir
 
 
@@ -293,7 +291,12 @@ def _build_synthetic_gptneo_dir(dest: Path) -> None:
             f.write(b)
 
 
-def run_experiment(checkpoint_dir: str | None = None) -> dict[str, object]:
+def run_experiment(
+    checkpoint_dir: str | None = None,
+    *,
+    require_real_weights: bool | None = None,
+    expected_safetensors_sha256: str | None = None,
+) -> dict[str, object]:
     with tempfile.TemporaryDirectory(prefix="weft_e3_") as tmp:
         tmp_path = Path(tmp)
         ck_dir = tmp_path / "checkpoint"
@@ -304,24 +307,15 @@ def run_experiment(checkpoint_dir: str | None = None) -> dict[str, object]:
             "# Writing\nUse plain language. No em dashes.\n", encoding="utf-8"
         )
 
-        # Resolve checkpoint source cleanly without exposing host user paths
-        if checkpoint_dir is not None:
-            src = Path(checkpoint_dir)
-            for item in src.iterdir():
-                if item.is_file():
-                    os.symlink(item.resolve(), ck_dir / item.name)
-            checkpoint_label = "user_provided_checkpoint"
-        else:
-            st_file, cfg_dir = discover_tinystories_cache()
-            if st_file is not None and cfg_dir is not None:
-                os.symlink(st_file, ck_dir / "model.safetensors")
-                for fname in ("config.json", "tokenizer.json", "vocab.json", "merges.txt"):
-                    if (cfg_dir / fname).is_file():
-                        os.symlink((cfg_dir / fname).resolve(), ck_dir / fname)
-                checkpoint_label = "pretrained_safetensors:roneneldan/TinyStories-1M"
-            else:
-                _build_synthetic_gptneo_dir(ck_dir)
-                checkpoint_label = "synthetic_gptneo_8layer_fallback"
+        # Resolve checkpoint source with fail-closed real-weight provenance
+        provenance = resolve_experiment_checkpoint(
+            ck_dir,
+            build_synthetic_fn=_build_synthetic_gptneo_dir,
+            checkpoint_dir=checkpoint_dir,
+            require_real_weights=require_real_weights,
+            expected_safetensors_sha256=expected_safetensors_sha256,
+        )
+        checkpoint_label = provenance.checkpoint_source
 
         if not (ck_dir / "chat_template.jinja").exists():
             (ck_dir / "chat_template.jinja").write_text("{{ prompt }}\n", encoding="utf-8")
@@ -566,6 +560,9 @@ def run_experiment(checkpoint_dir: str | None = None) -> dict[str, object]:
         return {
             "experiment": "E3_real_checkpoint_smoke",
             "checkpoint_source": checkpoint_label,
+            "is_synthetic_fallback": provenance.is_synthetic_fallback,
+            "real_weights_verified": provenance.real_weights_verified,
+            "weights_provenance": provenance.to_dict(),
             "n_tensors_fingerprinted": manifest.n_tensors,
             "checkpoint_fingerprint_prefix": manifest.checkpoint_fingerprint[:16],
             "sanity_next_token_prompt0": sample_next_token,
@@ -602,8 +599,33 @@ def run_experiment(checkpoint_dir: str | None = None) -> dict[str, object]:
         }
 
 
-if __name__ == "__main__":
+def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--checkpoint-dir", default=None)
-    args = ap.parse_args()
-    print(json.dumps(run_experiment(args.checkpoint_dir), indent=2))
+    ap.add_argument(
+        "--require-real-weights",
+        action="store_true",
+        default=None,
+        help="Fail closed instead of falling back to synthetic weights (or set WEFT_REQUIRE_REAL_WEIGHTS=1).",
+    )
+    ap.add_argument(
+        "--expected-sha256",
+        default=None,
+        help="Pin the exact expected 64-hex SHA-256 digest of model.safetensors.",
+    )
+    args = ap.parse_args(argv)
+    try:
+        res = run_experiment(
+            args.checkpoint_dir,
+            require_real_weights=True if args.require_real_weights else None,
+            expected_safetensors_sha256=args.expected_sha256,
+        )
+    except RealWeightsRequiredError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
+    print(json.dumps(res, indent=2))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

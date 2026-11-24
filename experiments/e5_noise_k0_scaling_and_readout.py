@@ -24,6 +24,7 @@ Run:
 
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
 import os
@@ -38,6 +39,10 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from experiments.checkpoint_provenance import (
+    RealWeightsRequiredError,
+    resolve_experiment_checkpoint,
+)
 from experiments.e3_real_checkpoint_smoke import (
     PureNumpyGPTNeo,
     SimpleWordTokenizer,
@@ -45,7 +50,6 @@ from experiments.e3_real_checkpoint_smoke import (
     _gelu_new,
     _layer_norm,
     _softmax,
-    discover_tinystories_cache,
     load_safetensors_dict,
 )
 from weft.certificate import GatePolicy
@@ -131,28 +135,24 @@ def _token_id(tok: SimpleWordTokenizer, word: str, fallback: int) -> int:
     return fallback % len(tok.vocab)
 
 
-def run_experiment(checkpoint_dir: str | None = None) -> dict[str, Any]:
+def run_experiment(
+    checkpoint_dir: str | None = None,
+    *,
+    require_real_weights: bool | None = None,
+    expected_safetensors_sha256: str | None = None,
+) -> dict[str, Any]:
     with tempfile.TemporaryDirectory(prefix="weft_e5_") as tmp:
         tmp_path = Path(tmp)
         ck_dir = tmp_path / "checkpoint"
         ck_dir.mkdir()
-        if checkpoint_dir is not None:
-            src = Path(checkpoint_dir)
-            for item in src.iterdir():
-                if item.is_file():
-                    os.symlink(item.resolve(), ck_dir / item.name)
-            checkpoint_label = "user_provided_checkpoint"
-        else:
-            st_file, cfg_dir = discover_tinystories_cache()
-            if st_file is not None and cfg_dir is not None:
-                os.symlink(st_file, ck_dir / "model.safetensors")
-                for fname in ("config.json", "tokenizer.json", "vocab.json", "merges.txt"):
-                    if (cfg_dir / fname).is_file():
-                        os.symlink((cfg_dir / fname).resolve(), ck_dir / fname)
-                checkpoint_label = "pretrained_safetensors:roneneldan/TinyStories-1M"
-            else:
-                _build_synthetic_gptneo_dir(ck_dir)
-                checkpoint_label = "synthetic_gptneo_8layer_fallback"
+        provenance = resolve_experiment_checkpoint(
+            ck_dir,
+            build_synthetic_fn=_build_synthetic_gptneo_dir,
+            checkpoint_dir=checkpoint_dir,
+            require_real_weights=require_real_weights,
+            expected_safetensors_sha256=expected_safetensors_sha256,
+        )
+        checkpoint_label = provenance.checkpoint_source
 
         cfg_json = json.loads((ck_dir / "config.json").read_text(encoding="utf-8"))
         weights = load_safetensors_dict(ck_dir / "model.safetensors")
@@ -634,6 +634,9 @@ def run_experiment(checkpoint_dir: str | None = None) -> dict[str, Any]:
         return {
             "experiment": "E5_noise_k0_scaling_and_wire_dialect_readout",
             "checkpoint_source": checkpoint_label,
+            "is_synthetic_fallback": provenance.is_synthetic_fallback,
+            "real_weights_verified": provenance.real_weights_verified,
+            "weights_provenance": provenance.to_dict(),
             "edit_layer": edit_layer,
             "batch_forward_parity_max_diff": batch_forward_max_diff,
             "part_a_seeded_noise_k0_curve": {
@@ -671,10 +674,33 @@ def run_experiment(checkpoint_dir: str | None = None) -> dict[str, Any]:
         }
 
 
-def main() -> None:
-    res = run_experiment()
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--checkpoint-dir", default=None)
+    ap.add_argument(
+        "--require-real-weights",
+        action="store_true",
+        default=None,
+        help="Fail closed instead of falling back to synthetic weights (or set WEFT_REQUIRE_REAL_WEIGHTS=1).",
+    )
+    ap.add_argument(
+        "--expected-sha256",
+        default=None,
+        help="Pin the exact expected 64-hex SHA-256 digest of model.safetensors.",
+    )
+    args = ap.parse_args(argv)
+    try:
+        res = run_experiment(
+            args.checkpoint_dir,
+            require_real_weights=True if args.require_real_weights else None,
+            expected_safetensors_sha256=args.expected_sha256,
+        )
+    except RealWeightsRequiredError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
     print(json.dumps(res, indent=2, sort_keys=False))
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
