@@ -130,9 +130,26 @@ class FixedRadixCertificate:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "FixedRadixCertificate":
-        if not isinstance(data.get("factor_digest"), str) or not isinstance(
-            data.get("quant_dtype"), str
-        ):
+        if not isinstance(data, dict):
+            raise TypeError(f"certificate data must be a dict (got {type(data).__name__}).")
+        required_int_fields = (
+            "radix_scale_exp2",
+            "frobenius_sq_scaled",
+            "spectral_norm_sq_scaled",
+            "leakage_energy_scaled",
+            "max_safety_dot_sq_scaled",
+            "projector_epoch",
+        )
+        missing = [
+            key
+            for key in (*required_int_fields, "factor_digest", "quant_dtype")
+            if key not in data
+        ]
+        if missing:
+            raise ValueError(f"Missing required certificate field(s): {', '.join(missing)}.")
+        factor_digest = data["factor_digest"]
+        quant_dtype = data["quant_dtype"]
+        if not isinstance(factor_digest, str) or not isinstance(quant_dtype, str):
             raise TypeError("factor_digest and quant_dtype must be strings.")
         return cls(
             radix_scale_exp2=_require_strict_int("radix_scale_exp2", data["radix_scale_exp2"]),
@@ -149,8 +166,8 @@ class FixedRadixCertificate:
                 "max_safety_dot_sq_scaled", data["max_safety_dot_sq_scaled"]
             ),
             projector_epoch=_require_strict_int("projector_epoch", data["projector_epoch"]),
-            factor_digest=data["factor_digest"],
-            quant_dtype=data["quant_dtype"],
+            factor_digest=factor_digest,
+            quant_dtype=quant_dtype,
         )
 
 

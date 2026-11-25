@@ -17,9 +17,80 @@ Implements the unified verification primitive:
 from __future__ import annotations
 
 import hashlib
+import json
+import math
+import numbers
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable, Mapping, Optional, Sequence
+
+
+def _canonical_value_tree(value: Any) -> Any:
+    """Encode an arbitrary anchor input/output deterministically with explicit type tags."""
+    if value is None:
+        return ["null"]
+    if type(value) is bool:
+        return ["bool", value]
+    if isinstance(value, numbers.Integral):
+        return ["int", int(value)]
+    if isinstance(value, numbers.Real):
+        fval = float(value)
+        if math.isnan(fval):
+            return ["float", "nan"]
+        if math.isinf(fval):
+            return ["float", "+inf" if fval > 0 else "-inf"]
+        return ["float", fval.hex()]
+    if type(value) is str:
+        return ["str", value]
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        return ["bytes", bytes(value).hex()]
+    if (
+        hasattr(value, "dtype")
+        and hasattr(value, "shape")
+        and hasattr(value, "tobytes")
+        and callable(value.tobytes)
+    ):
+        try:
+            raw = value.tobytes(order="C")
+        except TypeError:
+            raw = value.tobytes()
+        return [
+            "ndarray",
+            str(value.dtype),
+            [int(dim) for dim in value.shape],
+            hashlib.sha256(raw).hexdigest(),
+        ]
+    if type(value) is list:
+        return ["list", [_canonical_value_tree(item) for item in value]]
+    if type(value) is tuple:
+        return ["tuple", [_canonical_value_tree(item) for item in value]]
+    if type(value) is dict:
+        encoded_items = []
+        for k, v in value.items():
+            ek = _canonical_value_tree(k)
+            ek_key = json.dumps(ek, separators=(",", ":"), ensure_ascii=True)
+            encoded_items.append((ek_key, [ek, _canonical_value_tree(v)]))
+        encoded_items.sort(key=lambda pair: pair[0])
+        return ["dict", [pair[1] for pair in encoded_items]]
+    if type(value) in (set, frozenset):
+        encoded_elems = sorted(
+            (
+                json.dumps(ev, separators=(",", ":"), ensure_ascii=True),
+                ev,
+            )
+            for ev in (_canonical_value_tree(item) for item in value)
+        )
+        return [type(value).__name__, [pair[1] for pair in encoded_elems]]
+    return ["obj", f"{type(value).__module__}.{type(value).__qualname__}", repr(value)]
+
+
+def _canonical_value_sha256(value: Any) -> str:
+    payload = json.dumps(
+        _canonical_value_tree(value),
+        separators=(",", ":"),
+        ensure_ascii=True,
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
 
 
 class GateVerdict(str, Enum):
@@ -56,10 +127,26 @@ class AnchorSuite:
 
     def suite_digest(self) -> str:
         h = hashlib.sha256()
-        h.update(f"weft-anchor-suite/v1:{self.suite_id}\n".encode("utf-8"))
-        for group in (self.safety_canaries, self.target_canaries, self.private_holdouts):
+        h.update(f"weft-anchor-suite/v2:{self.suite_id}\n".encode("utf-8"))
+        h.update(
+            f"min_holdout_rate={_canonical_value_sha256(self.min_holdout_rate)}\n".encode("utf-8")
+        )
+        for group_name, group in (
+            ("safety_canaries", self.safety_canaries),
+            ("target_canaries", self.target_canaries),
+            ("private_holdouts", self.private_holdouts),
+        ):
+            h.update(f"group:{group_name}:{len(group)}\n".encode("utf-8"))
             for c in group:
-                h.update(f"{c.case_id}|{c.kind}|{c.difficulty_rung}\n".encode("utf-8"))
+                prompt_sha = _canonical_value_sha256(c.prompt_or_input)
+                expected_sha = _canonical_value_sha256(c.expected_output)
+                rec = json.dumps(
+                    [c.case_id, c.kind, c.difficulty_rung, prompt_sha, expected_sha],
+                    separators=(",", ":"),
+                    ensure_ascii=True,
+                )
+                h.update(rec.encode("utf-8"))
+                h.update(b"\n")
         return h.hexdigest()
 
 
@@ -103,7 +190,7 @@ def evaluate_adapter_gate(
     suite: AnchorSuite,
     evaluator: Callable[[Any], Any],
     matcher: Optional[Callable[[Any, Any], bool]] = None,
-    certificate_ok: bool = True,
+    certificate_ok: bool = False,
     candidate_supplied_anchors: Optional[Any] = None,
     require_flake_verified: bool = True,
 ) -> VerifyResult:
@@ -130,7 +217,7 @@ def evaluate_adapter_gate(
     if require_flake_verified and not suite.flake_verified:
         reasons.append("anchor_suite_not_flake_verified")
 
-    if not certificate_ok:
+    if certificate_ok is not True:
         reasons.append("integer_certificate_failed")
 
     if reasons:
@@ -272,14 +359,31 @@ def lexicase_select(
     """
     if not candidate_errors:
         raise ValueError("candidate_errors must be non-empty.")
+    if (
+        isinstance(epsilon, bool)
+        or not isinstance(epsilon, numbers.Real)
+        or not math.isfinite(float(epsilon))
+        or float(epsilon) < 0.0
+    ):
+        raise ValueError(f"epsilon must be a finite non-negative real number (got {epsilon!r}).")
 
     pool = sorted(candidate_errors.keys())
     n_cases = len(candidate_errors[pool[0]])
+    for cid in pool:
+        vec = candidate_errors[cid]
+        if len(vec) != n_cases:
+            raise ValueError(f"Error vector length mismatch for candidate {cid!r}.")
+        for idx, val in enumerate(vec):
+            if (
+                isinstance(val, bool)
+                or not isinstance(val, numbers.Real)
+                or not math.isfinite(float(val))
+            ):
+                raise ValueError(
+                    f"Non-finite error value for candidate {cid!r} at index {idx}: {val!r}."
+                )
     if n_cases == 0:
         return pool[0]
-    for cid in pool:
-        if len(candidate_errors[cid]) != n_cases:
-            raise ValueError(f"Error vector length mismatch for candidate {cid!r}.")
 
     # Deterministic Fisher-Yates shuffle over case indices
     order = list(range(n_cases))

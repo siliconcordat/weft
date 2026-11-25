@@ -29,6 +29,7 @@ from .quant import quantize_f16
 GGUF_MAGIC = b"GGUF"
 GGUF_VERSION = 3
 GGUF_DEFAULT_ALIGNMENT = 32
+MAX_GGUF_ARRAY_DEPTH = 32
 
 # GGUF metadata value type IDs (per ggml/GGUF v3 specification)
 GGUF_TYPE_UINT32 = 4
@@ -328,10 +329,17 @@ def _read_gguf_str(fh: BinaryIO, *, max_len: int = 16 * 1024 * 1024) -> str:
     (slen,) = struct.unpack("<Q", _read_exact(fh, 8))
     if slen > max_len:
         raise ValueError(f"GGUF string length exceeds limit: {slen}")
-    return _read_exact(fh, slen).decode("utf-8", errors="replace")
+    return _read_exact(fh, slen).decode("utf-8")
 
 
-def _skip_or_read_gguf_val(fh: BinaryIO, vtype: int, *, keep: bool, file_size: int) -> Any:
+def _skip_or_read_gguf_val(
+    fh: BinaryIO,
+    vtype: int,
+    *,
+    keep: bool,
+    file_size: int,
+    depth: int = 0,
+) -> Any:
     if vtype in _GGUF_SCALAR_SIZES:
         raw = _read_exact(fh, _GGUF_SCALAR_SIZES[vtype])
         if not keep:
@@ -359,6 +367,10 @@ def _skip_or_read_gguf_val(fh: BinaryIO, vtype: int, *, keep: bool, file_size: i
         fh.seek(slen, 1)
         return None
     if vtype == 9:  # GGUF_TYPE_ARRAY
+        if depth >= MAX_GGUF_ARRAY_DEPTH:
+            raise ValueError(
+                f"GGUF nested array depth exceeds safety cap ({MAX_GGUF_ARRAY_DEPTH})."
+            )
         elem_type, count = struct.unpack("<IQ", _read_exact(fh, 12))
         if count > 1_000_000:
             raise ValueError(f"GGUF array length exceeds safety cap: {count}")
@@ -376,7 +388,9 @@ def _skip_or_read_gguf_val(fh: BinaryIO, vtype: int, *, keep: bool, file_size: i
                 fh.seek(slen, 1)
             return f"<str_array:{count}>" if keep else None
         for _ in range(count):
-            _skip_or_read_gguf_val(fh, elem_type, keep=False, file_size=file_size)
+            _skip_or_read_gguf_val(
+                fh, elem_type, keep=False, file_size=file_size, depth=depth + 1
+            )
         return f"<nested_array:{count}>" if keep else None
     raise ValueError(f"Unsupported GGUF metadata value type: {vtype}")
 

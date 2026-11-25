@@ -356,7 +356,7 @@ def verify_slab_wire(
     """Fail-closed verification of container integrity, pins, and integer certificate policy."""
     try:
         container = read_slab_wire(source)
-    except (OSError, ValueError, TypeError) as exc:
+    except (OSError, ValueError, TypeError, KeyError) as exc:
         return False, [f"container_invalid:{exc}"], None
 
     problems: list[str] = []
