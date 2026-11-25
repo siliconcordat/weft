@@ -623,6 +623,12 @@ class BetaEditNullspaceProjector:
     ) -> float:
         """Measure ||Delta_cum @ K0||_F across active (or scaled) arena slots."""
         k64 = np.ascontiguousarray(k0, dtype=np.float64)
+        if self.config.cross_isa_deterministic:
+            drift = np.subtract(
+                self.effective_matvec(k64, slot_scales=slot_scales),
+                ozaki_exact_matmul(self._w0, k64),
+            )
+            return math.sqrt(float(ieee754_binary_sum(np.multiply(drift, drift).reshape(-1))))
         drift = self.effective_matvec(k64, slot_scales=slot_scales) - (self._w0 @ k64)
         return float(np.linalg.norm(drift, ord="fro"))
 

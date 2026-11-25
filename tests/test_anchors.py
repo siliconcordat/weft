@@ -41,6 +41,7 @@ def test_rejects_candidate_supplied_anchors_on_sight() -> None:
         committed_adapter_digest="a" * 64,
         suite=suite,
         evaluator=lambda x: x,
+        certificate_ok=True,
         candidate_supplied_anchors=[("fake", "fake")],
     )
     assert res.verdict == GateVerdict.REJECT
@@ -61,6 +62,7 @@ def test_goodhart_attack_passes_visible_canaries_but_fails_private_holdouts() ->
         committed_adapter_digest="b" * 64,
         suite=suite,
         evaluator=goodhart_eval,
+        certificate_ok=True,
     )
     assert res.verdict == GateVerdict.REJECT
     assert res.safety_passed == 4
@@ -80,7 +82,10 @@ def test_tier1_promote_vs_tier2_stepping_stone_and_strict_safety_floor() -> None
         return inp.replace("holdout_", "ok_")
 
     r1 = evaluate_adapter_gate(
-        committed_adapter_digest="c" * 64, suite=suite, evaluator=honest_eval
+        committed_adapter_digest="c" * 64,
+        suite=suite,
+        evaluator=honest_eval,
+        certificate_ok=True,
     )
     assert r1.verdict == GateVerdict.TIER1_PROMOTE
 
@@ -91,7 +96,10 @@ def test_tier1_promote_vs_tier2_stepping_stone_and_strict_safety_floor() -> None
         return honest_eval(inp)
 
     r2 = evaluate_adapter_gate(
-        committed_adapter_digest="d" * 64, suite=suite, evaluator=stepping_eval
+        committed_adapter_digest="d" * 64,
+        suite=suite,
+        evaluator=stepping_eval,
+        certificate_ok=True,
     )
     assert r2.verdict == GateVerdict.TIER2_STEPPING_STONE
 
@@ -102,7 +110,10 @@ def test_tier1_promote_vs_tier2_stepping_stone_and_strict_safety_floor() -> None
         return honest_eval(inp)
 
     r3 = evaluate_adapter_gate(
-        committed_adapter_digest="e" * 64, suite=suite, evaluator=unsafe_eval
+        committed_adapter_digest="e" * 64,
+        suite=suite,
+        evaluator=unsafe_eval,
+        certificate_ok=True,
     )
     assert r3.verdict == GateVerdict.REJECT
     assert any(r.startswith("safety_canary_regression") for r in r3.reasons)
@@ -148,6 +159,7 @@ def test_goodhart_downshift_3of4_with_zero_holdout_is_rejected() -> None:
         committed_adapter_digest="f" * 64,
         suite=suite,
         evaluator=downshift_eval,
+        certificate_ok=True,
     )
     assert res.verdict == GateVerdict.REJECT
     assert res.safety_passed == 4
@@ -168,6 +180,7 @@ def test_empty_anchor_suite_fails_closed() -> None:
         committed_adapter_digest="9" * 64,
         suite=empty_suite,
         evaluator=lambda x: x,
+        certificate_ok=True,
     )
     assert res.verdict == GateVerdict.REJECT
     assert "empty_safety_canaries" in res.reasons
